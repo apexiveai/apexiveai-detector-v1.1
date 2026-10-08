@@ -8,7 +8,7 @@ Upload two files in either source slot. The analyzer accepts PDF, XLSX, and XLSM
 - XLSX/XLSM against XLSX/XLSM
 - PDF against XLSX/XLSM (in either upload order)
 
-PDF extraction is limited to artwork placed in the record's `(540)` field; spreadsheet extraction is limited to images anchored in a `Mark` (or equivalent logo/device) column. PDF/PDF and XLSX/XLSM-to-XLSX/XLSM comparisons use those same field-specific logo assets. Application-number equality and visual similarity are reported separately; similarity findings are technical evidence and require human/legal review. If both uploads are byte-for-byte identical, the field-specific logos are extracted once and compared as exact visual pairs instead of repeating the extraction.
+PDF extraction is limited to artwork or readable text placed in the record's `(540)` field; spreadsheet extraction checks every worksheet for images or text in a `Mark` (or equivalent logo/device) column, including `Main objectives`. Image marks are compared visually, and text marks are compared by normalized exact text. The completed analysis includes a paginated inventory of every extracted mark in each source, independently of whether it matched another mark. Application-number equality and visual similarity are reported separately; similarity findings are technical evidence and require human/legal review. If both uploads are byte-for-byte identical, field-specific assets are extracted once and paired directly instead of repeating extraction.
 https://github.com/apexiveai/FINAL-PRODUCTION..git
 ## Local development
 

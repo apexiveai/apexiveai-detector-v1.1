@@ -54,11 +54,32 @@ def results(jid:str,offset:int=0,limit:int=100,q:str='',decision:str=''):
     items=json.loads(p.read_text(encoding='utf8'))
     query=q.strip().casefold()
     if query:
-        searchable_fields=('match_id','source_a_asset_id','source_b_asset_id','source_a_file','source_b_file','application_a','application_b')
+        searchable_fields=('match_id','source_a_asset_id','source_b_asset_id','source_a_file','source_b_file','source_a_sheet','source_b_sheet','source_a_text','source_b_text','application_a','application_b')
         items=[item for item in items if any(query in str(item.get(field) or '').casefold() for field in searchable_fields)]
     if decision:
-        items=[item for item in items if item.get('decision')==decision]
+        if decision=='EXACT':
+            items=[item for item in items if item.get('decision') in {'EXACT_VISUAL_IDENTITY','EXACT_TEXT_MARK_MATCH'}]
+        else:
+            items=[item for item in items if item.get('decision')==decision]
     return {'items':items[offset:offset+limit],'total':len(items),'offset':offset,'limit':limit}
+
+@app.get('/api/jobs/{jid}/assets/{side}')
+def assets(jid:str,side:str,offset:int=0,limit:int=100,q:str=''):
+    if jid not in JOBS:raise HTTPException(404,'Job not found')
+    if side not in {'A','B'}:raise HTTPException(400,'Invalid side')
+    p=DATA/jid/'report'/f'assets_{side.lower()}.json'
+    if not p.exists():return {'items':[],'total':0,'offset':max(0,offset),'limit':max(1,min(limit,500))}
+    limit=max(1,min(limit,500));offset=max(0,offset)
+    items=json.loads(p.read_text(encoding='utf8'))
+    query=q.strip().casefold()
+    if query:
+        fields=('asset_id','source_file','application_no','company','mark','mark_text','sheet','page','row','field_label')
+        items=[item for item in items if any(query in str(item.get(field) or '').casefold() for field in fields)]
+    total=len(items)
+    page_items=items[offset:offset+limit]
+    for item in page_items:
+        item['asset_url']=f"/api/jobs/{jid}/assets/{side}/{item['image_file']}" if item.get('image_file') else None
+    return {'items':page_items,'total':total,'offset':offset,'limit':limit}
 
 @app.get('/api/jobs/{jid}/assets/{side}/{filename}')
 def asset(jid:str,side:str,filename:str):

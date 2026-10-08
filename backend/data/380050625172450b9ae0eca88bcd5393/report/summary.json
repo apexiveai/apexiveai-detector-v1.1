@@ -1,0 +1,29 @@
+{
+  "source_a": {
+    "file": "source_a.xlsx",
+    "type": ".xlsx",
+    "assets": 113,
+    "sha256": "3e4fccb456dc7cce7113d0023daa2d89d405a141c1710779202433bca949d144"
+  },
+  "source_b": {
+    "file": "source_b.xlsx",
+    "type": ".xlsx",
+    "assets": 113,
+    "sha256": "3e4fccb456dc7cce7113d0023daa2d89d405a141c1710779202433bca949d144"
+  },
+  "matched": 118,
+  "unmatched_a": 0,
+  "unmatched_b": 0,
+  "exact_identity": 59,
+  "exact_text_matches": 59,
+  "very_high": 0,
+  "high": 0,
+  "application_number_equal_matches": 115,
+  "application_number_used_for_matching": false,
+  "identical_sources": true,
+  "analysis_skipped": false,
+  "same_file_logo_scan": true,
+  "engine": "Apexive AI Trademark Visual Conflict Engine v4",
+  "message": "Identical source files: logo marks were extracted once and matched directly.",
+  "note": "Identical source files: logo marks were extracted once and matched directly."
+}

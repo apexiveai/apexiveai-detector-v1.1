@@ -13,7 +13,7 @@ MEDIA_EXT={'.png','.jpg','.jpeg','.bmp','.webp','.tif','.tiff','.gif','.wmf','.e
 APP_RE=re.compile(r'(?<![A-Z0-9])(?:[A-Z]{1,8}/)?[T7I]\s*/\s*(\d{4})\s*/\s*(\d{3,10})(?!\d)',re.I)
 MARK_WORDS={'MARK','LOGO','DEVICE','TRADEMARK','TRADEMARKS','LABEL','BRAND','FIGURE'}
 PDF_FIELD_CODE_RE=re.compile(r'\(\d{3}\)')
-MARK_HEADERS={word.lower() for word in MARK_WORDS}|{'reproductionofmark'}
+MARK_HEADERS={word.lower() for word in MARK_WORDS}|{'reproductionofmark','mainobjective','mainobjectives','emainobjective','emainobjectives'}
 
 def norm_app(v):
     if v is None:return None
@@ -210,7 +210,10 @@ def page_text_words(page):
     try:return page.get_text('words')
     except:return []
 
-def pdf_assets(path,out,progress):
+def normalized_mark_text(value):
+    return re.sub(r'\s+',' ',str(value or '')).strip().casefold()
+
+def pdf_assets(path,out,progress,side='A'):
     doc=pymupdf.open(str(path));assets=[];pages=len(doc);asset_no=0
     for pi,page in enumerate(doc):
         progress(int(pi/max(pages,1)*40),f'Extracting PDF: page {pi+1}/{pages}')
@@ -236,6 +239,7 @@ def pdf_assets(path,out,progress):
                 if rect.x0>=field.x1+20 and field_top<=((rect.y0+rect.y1)/2)<field_bottom
             ]
             method='pdf_540_embedded_image'
+            mark_text=''
             if candidates:
                 bbox=pymupdf.Rect(
                     min(rect.x0 for rect in candidates),min(rect.y0 for rect in candidates),
@@ -248,12 +252,26 @@ def pdf_assets(path,out,progress):
                     and rect.width<page.rect.width*.7 and rect.height<page.rect.height*.3
                     and rect.x0>=field.x1+20 and field_top<=((rect.y0+rect.y1)/2)<field_bottom
                 ]
-                if not candidates:continue
-                bbox=pymupdf.Rect(
-                    min(rect.x0 for rect in candidates),min(rect.y0 for rect in candidates),
-                    max(rect.x1 for rect in candidates),max(rect.y1 for rect in candidates),
-                )
-                method='pdf_540_vector_art'
+                if candidates:
+                    bbox=pymupdf.Rect(
+                        min(rect.x0 for rect in candidates),min(rect.y0 for rect in candidates),
+                        max(rect.x1 for rect in candidates),max(rect.y1 for rect in candidates),
+                    )
+                    method='pdf_540_vector_art'
+                else:
+                    text_words=[
+                        word for word in words
+                        if word[1]>=field.y1-2 and word[1]<field_bottom
+                        and word[0]>=field.x0 and not PDF_FIELD_CODE_RE.fullmatch(word[4])
+                    ]
+                    if not text_words:continue
+                    text_words.sort(key=lambda word:(round(word[1],1),word[0]))
+                    mark_text=' '.join(word[4] for word in text_words).strip()
+                    bbox=pymupdf.Rect(
+                        min(word[0] for word in text_words),min(word[1] for word in text_words),
+                        max(word[2] for word in text_words),max(word[3] for word in text_words),
+                    )
+                    method='pdf_540_text_mark'
             bbox=pymupdf.Rect(
                 max(page.rect.x0,bbox.x0-2),max(page.rect.y0,bbox.y0-2),
                 min(page.rect.x1,bbox.x1+2),min(page.rect.y1,bbox.y1+2),
@@ -261,12 +279,12 @@ def pdf_assets(path,out,progress):
             pix=page.get_pixmap(matrix=pymupdf.Matrix(2,2),clip=bbox,alpha=False)
             im=cv(pix.tobytes('png'))
             if im is None:raise ValueError(f'Could not render (540) logo on PDF page {pi+1}')
-            asset_no+=1;fn=f'A_{asset_no:06d}.png';cv2.imwrite(str(out/fn),im)
+            asset_no+=1;fn=f'{side}_{asset_no:06d}.png';cv2.imwrite(str(out/fn),im)
             application_no=(
                 min(applications,key=lambda item:abs(item[0]-(field.y0+field.y1)/2))[1]
                 if applications else app_metadata(page.get_text('text'))
             )
-            assets.append({'asset_id':f'A-{asset_no:06d}','source_type':'pdf','source_file':path.name,'page':pi+1,'bbox':[bbox.x0,bbox.y0,bbox.x1,bbox.y1],'application_no':application_no,'field_code':'(540)','field_label':'(540) logo','image_file':fn,'extract_method':method})
+            assets.append({'asset_id':f'{side}-{asset_no:06d}','source_type':'pdf','source_file':path.name,'page':pi+1,'bbox':[bbox.x0,bbox.y0,bbox.x1,bbox.y1],'application_no':application_no,'field_code':'(540)','field_label':'(540) text mark' if method=='pdf_540_text_mark' else '(540) logo','mark_text':mark_text,'mark_content_type':'text' if method=='pdf_540_text_mark' else 'image','image_file':fn,'extract_method':method})
         progress(int((pi+1)/max(pages,1)*40),f'Extracting PDF: page {pi+1}/{pages}')
     return assets
 
@@ -293,20 +311,20 @@ def ooxml_images(path):
                 if media in names:result.append((sh.attrib.get('name','Sheet'),row,col,z.read(media),Path(media).suffix.lower()))
     return result
 
-def xlsx_assets(path,out,progress):
+def xlsx_assets(path,out,progress,side='A'):
     progress(45,'Reading workbook values and indexing embedded images')
     raw=ooxml_images(path);wb=load_workbook(path,data_only=True,read_only=True,keep_links=False);assets=[];asset_no=0
     image_sheets={image[0] for image in raw}
     try:
         for ws in wb.worksheets:
             max_row=ws.max_row or 0;max_col=max(ws.max_column or 0,1)
-            mark_col=None;headers={}
+            mark_col=None;mark_header_row=0;headers={}
             header_end=min(20,max_row)
             if header_end:
                 for r,row_values in enumerate(ws.iter_rows(min_row=1,max_row=header_end,max_col=max_col,values_only=True),1):
                     for c,value in enumerate(row_values,1):
                         v=re.sub(r'[^a-z0-9]+','',str(value or '').lower())
-                        if v in MARK_HEADERS and mark_col is None:mark_col=c
+                        if v in MARK_HEADERS and mark_col is None:mark_col=c;mark_header_row=r
                         if 'app' in v and ('no' in v or 'number' in v):headers.setdefault('app',c)
                         if any(k in v for k in ('company','applicant','owner')):headers.setdefault('company',c)
             if mark_col is None:
@@ -323,27 +341,33 @@ def xlsx_assets(path,out,progress):
                     else:message+=' The image may be damaged or use an unsupported format.'
                     raise ValueError(message)
                 byrow.setdefault(row,[]).append((im,row,col,ext))
-            if not byrow:continue
             value_columns=[mark_col,headers.get('app',1)]
             if max_col>=2:value_columns.append(headers.get('company',2))
+            value_max_col=max(value_columns)
+            first_row=min(mark_header_row+1,min(byrow,default=mark_header_row+1))
             values_by_row={}
-            first_row=min(byrow);last_row=max(byrow);value_max_col=max(value_columns)
-            for row,row_values in enumerate(ws.iter_rows(min_row=first_row,max_row=last_row,max_col=value_max_col,values_only=True),first_row):
-                if row in byrow:values_by_row[row]=row_values
-            for row,items in byrow.items():
+            for row,row_values in enumerate(ws.iter_rows(min_row=first_row,max_row=max_row,max_col=value_max_col,values_only=True),first_row):
+                mark_value=row_values[mark_col-1] if mark_col<=len(row_values) else None
+                if row in byrow or (mark_value is not None and str(mark_value).strip()):
+                    values_by_row[row]=row_values
+            for row in sorted(values_by_row):
+                items=byrow.get(row,[])
                 row_values=values_by_row[row]
                 cell=lambda column:row_values[column-1] if column<=len(row_values) else None
                 app=str(cell(headers.get('app',1)) or '');company=str(cell(headers.get('company',2)) or '') if max_col>=2 else '';mark=str(cell(mark_col) or '')
-                for im,rr,col,ext in items:
-                    asset_no+=1;fn=f'B_{asset_no:06d}.png';cv2.imwrite(str(out/fn),im);assets.append({'asset_id':f'B-{asset_no:06d}','source_type':'xlsx','source_file':path.name,'sheet':ws.title,'row':row,'column':col,'application_no':norm_app(app) or app,'company':company,'mark':mark,'field_code':'Mark','field_label':'Mark column logo','image_file':fn,'extract_method':'xlsx_mark_column_image','media_ext':ext})
+                if items:
+                    for im,rr,col,ext in items:
+                        asset_no+=1;fn=f'{side}_{asset_no:06d}.png';cv2.imwrite(str(out/fn),im);assets.append({'asset_id':f'{side}-{asset_no:06d}','source_type':'xlsx','source_file':path.name,'sheet':ws.title,'row':row,'column':col,'application_no':norm_app(app) or app,'company':company,'mark':mark,'mark_text':mark,'mark_content_type':'image','field_code':'Mark','field_label':'Mark column logo','image_file':fn,'extract_method':'xlsx_mark_column_image','media_ext':ext})
+                elif mark.strip():
+                    asset_no+=1;assets.append({'asset_id':f'{side}-{asset_no:06d}','source_type':'xlsx','source_file':path.name,'sheet':ws.title,'row':row,'column':mark_col,'application_no':norm_app(app) or app,'company':company,'mark':mark,'mark_text':mark,'mark_content_type':'text','field_code':'Mark','field_label':'Mark column text mark','extract_method':'xlsx_mark_column_text'})
     finally:
         wb.close()
-    progress(50,f'Extracting XLSX: {len(assets)} images')
+    progress(50,f'Extracting XLSX: {len(assets)} marks')
     return assets
 
 def extract(path,side,out,progress):
     ext=path.suffix.lower()
-    return pdf_assets(path,out,progress) if ext=='.pdf' else xlsx_assets(path,out,progress)
+    return pdf_assets(path,out,progress,side) if ext=='.pdf' else xlsx_assets(path,out,progress,side)
 
 def run(job_dir,file_a,file_b,update):
     work=job_dir/'assets';work.mkdir(parents=True,exist_ok=True);report=job_dir/'report';report.mkdir(parents=True,exist_ok=True)
@@ -351,6 +375,7 @@ def run(job_dir,file_a,file_b,update):
     hash_a=sha_file(file_a);hash_b=sha_file(file_b)
     identical_sources=hash_a==hash_b
     A=extract(file_a,'A',work,update)
+    visual_a=[asset for asset in A if asset.get('image_file')]
     if identical_sources:
         update(45,'Same file: reusing extracted logo images for comparison')
         B=[
@@ -361,9 +386,10 @@ def run(job_dir,file_a,file_b,update):
             }
             for index,asset in enumerate(A)
         ]
-        matches=[];matched_b=set();total=len(A)
+        visual_b=[asset for asset in B if asset.get('image_file')]
+        matches=[];matched_b=set();total=len(visual_a)
         metrics={'phash':1.0,'dhash':1.0,'ahash':1.0,'ssim':1.0,'contour_similarity':1.0,'mask_iou':1.0,'mask_ssim':1.0,'sift_inliers':0}
-        for idx,(a,b) in enumerate(zip(A,B)):
+        for idx,(a,b) in enumerate(zip(visual_a,visual_b)):
             matched_b.add(b['asset_id'])
             matches.append({
                 'match_id':f'M-{len(matches)+1:06d}',
@@ -393,8 +419,9 @@ def run(job_dir,file_a,file_b,update):
     else:
         B=extract(file_b,'B',work,update)
         update(55,f'Building visual index: {len(B)} assets')
+        visual_b=[asset for asset in B if asset.get('image_file')]
         Bfp=[];bysha={};buckets={}
-        for b in B:
+        for b in visual_b:
             im=cv(work/b['image_file']);f=fp(im);b['_fp']=f;Bfp.append(b)
             if f.get('sha256'):bysha.setdefault(f['sha256'],[]).append(b)
             for key in (f.get('phash'),f.get('dhash'),f.get('ahash')):
@@ -402,8 +429,8 @@ def run(job_dir,file_a,file_b,update):
         @lru_cache(maxsize=128)
         def prepared_file(image_file):
             return prepare_verification(cv(work/image_file))
-        matches=[];matched_b=set();total=len(A)
-        for idx,a in enumerate(A):
+        matches=[];matched_b=set();total=len(visual_a)
+        for idx,a in enumerate(visual_a):
             aim=cv(work/a['image_file']);af=fp(aim);prepared_a=None;cands=[];seen=set()
             for b in bysha.get(af.get('sha256'),[]):cands.append((1.0,b,'exact_hash'));seen.add(b['asset_id'])
             keys=[]
@@ -439,16 +466,50 @@ def run(job_dir,file_a,file_b,update):
                 matched_b.add(b['asset_id'])
                 matches.append({'match_id':f'M-{len(matches)+1:06d}','source_a_asset_id':a['asset_id'],'source_b_asset_id':b['asset_id'],'source_a_file':a['source_file'],'source_b_file':b['source_file'],'source_a_page':a.get('page'),'source_b_page':b.get('page'),'source_a_sheet':a.get('sheet'),'source_a_row':a.get('row'),'source_b_sheet':b.get('sheet'),'source_b_row':b.get('row'),'source_a_field':a.get('field_label',''),'source_b_field':b.get('field_label',''),'application_a':a.get('application_no',''),'application_b':b.get('application_no',''),'application_no_equal':bool(a.get('application_no') and b.get('application_no') and a.get('application_no')==b.get('application_no')),'score':round(score,6),'decision':decision,'match_origin':origin,'metrics':detail,'asset_a_url':f"/api/jobs/{job_dir.name}/assets/A/{a['image_file']}",'asset_b_url':f"/api/jobs/{job_dir.name}/assets/B/{b['image_file']}"})
             update(55+int((idx+1)/max(total,1)*40),f'Matching logos: {idx+1}/{total}')
+    matched_asset_pairs={(match['source_a_asset_id'],match['source_b_asset_id']) for match in matches}
+    text_assets_b={}
+    for asset in B:
+        mark_text=str(asset.get('mark_text') or asset.get('mark') or '').strip()
+        key=normalized_mark_text(mark_text)
+        if key:text_assets_b.setdefault(key,[]).append((asset,mark_text))
+    text_offsets={}
+    for asset_a in A:
+        text_a=str(asset_a.get('mark_text') or asset_a.get('mark') or '').strip()
+        key=normalized_mark_text(text_a)
+        candidates=text_assets_b.get(key,[])
+        offset=text_offsets.get(key,0)
+        while key and offset<len(candidates) and (asset_a['asset_id'],candidates[offset][0]['asset_id']) in matched_asset_pairs:
+            offset+=1
+        if not key or offset>=len(candidates):continue
+        asset_b,text_b=candidates[offset];text_offsets[key]=offset+1
+        pair=(asset_a['asset_id'],asset_b['asset_id'])
+        if pair in matched_asset_pairs:continue
+        matched_asset_pairs.add(pair);matched_b.add(asset_b['asset_id'])
+        matches.append({
+            'match_id':f'M-{len(matches)+1:06d}',
+            'source_a_asset_id':asset_a['asset_id'],'source_b_asset_id':asset_b['asset_id'],
+            'source_a_file':asset_a['source_file'],'source_b_file':asset_b['source_file'],
+            'source_a_page':asset_a.get('page'),'source_b_page':asset_b.get('page'),
+            'source_a_sheet':asset_a.get('sheet'),'source_a_row':asset_a.get('row'),
+            'source_b_sheet':asset_b.get('sheet'),'source_b_row':asset_b.get('row'),
+            'source_a_field':asset_a.get('field_label',''),'source_b_field':asset_b.get('field_label',''),
+            'application_a':asset_a.get('application_no',''),'application_b':asset_b.get('application_no',''),
+            'application_no_equal':bool(asset_a.get('application_no') and asset_b.get('application_no') and asset_a.get('application_no')==asset_b.get('application_no')),
+            'source_a_text':text_a,'source_b_text':text_b,'score':1.0,
+            'decision':'EXACT_TEXT_MARK_MATCH','match_origin':'exact_text_match',
+            'asset_a_url':f"/api/jobs/{job_dir.name}/assets/A/{asset_a['image_file']}" if asset_a.get('image_file') else None,
+            'asset_b_url':f"/api/jobs/{job_dir.name}/assets/B/{asset_b['image_file']}" if asset_b.get('image_file') else None,
+        })
     for a in A:a.pop('_fp',None)
     for b in B:b.pop('_fp',None)
     note=(
-        'Identical source files: logo images were extracted once and matched directly.'
+        'Identical source files: logo marks were extracted once and matched directly.'
         if identical_sources
-        else 'Application numbers are metadata only. Visual matching is independent of application-number equality. Similarity results are technical evidence for review, not a legal infringement verdict.'
+        else 'Application numbers are metadata only. Visual matching is independent of application-number equality. Text marks are matched by normalized exact text. Similarity results are technical evidence for review, not a legal infringement verdict.'
     )
-    summary={'source_a':{'file':file_a.name,'type':file_a.suffix.lower(),'assets':len(A),'sha256':hash_a},'source_b':{'file':file_b.name,'type':file_b.suffix.lower(),'assets':len(B),'sha256':hash_b},'matched':len(matches),'unmatched_a':len(A)-len({m['source_a_asset_id'] for m in matches}),'unmatched_b':len(B)-len(matched_b),'exact_identity':sum(m['decision']=='EXACT_VISUAL_IDENTITY' for m in matches),'very_high':sum(m['decision']=='VERY_HIGH_VISUAL_SIMILARITY' for m in matches),'high':sum(m['decision']=='HIGH_VISUAL_SIMILARITY' for m in matches),'application_number_equal_matches':sum(m['application_no_equal'] for m in matches),'application_number_used_for_matching':False,'identical_sources':identical_sources,'analysis_skipped':False,'same_file_logo_scan':identical_sources,'engine':'Apexive AI Trademark Visual Conflict Engine v4','message':note,'note':note}
+    summary={'source_a':{'file':file_a.name,'type':file_a.suffix.lower(),'assets':len(A),'sha256':hash_a},'source_b':{'file':file_b.name,'type':file_b.suffix.lower(),'assets':len(B),'sha256':hash_b},'matched':len(matches),'unmatched_a':len(A)-len({m['source_a_asset_id'] for m in matches}),'unmatched_b':len(B)-len(matched_b),'exact_identity':sum(m['decision']=='EXACT_VISUAL_IDENTITY' for m in matches),'exact_text_matches':sum(m['decision']=='EXACT_TEXT_MARK_MATCH' for m in matches),'very_high':sum(m['decision']=='VERY_HIGH_VISUAL_SIMILARITY' for m in matches),'high':sum(m['decision']=='HIGH_VISUAL_SIMILARITY' for m in matches),'application_number_equal_matches':sum(m['application_no_equal'] for m in matches),'application_number_used_for_matching':False,'identical_sources':identical_sources,'analysis_skipped':False,'same_file_logo_scan':identical_sources,'engine':'Apexive AI Trademark Visual Conflict Engine v4','message':note,'note':note}
     (report/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf8');(report/'matches.json').write_text(json.dumps(matches,ensure_ascii=False,indent=2),encoding='utf8');(report/'assets_a.json').write_text(json.dumps(A,ensure_ascii=False,indent=2),encoding='utf8');(report/'assets_b.json').write_text(json.dumps(B,ensure_ascii=False,indent=2),encoding='utf8')
     with open(report/'matches.csv','w',newline='',encoding='utf-8-sig') as f:
-        fields=['match_id','source_a_asset_id','source_b_asset_id','source_a_file','source_b_file','source_a_page','source_a_sheet','source_a_row','source_b_page','source_b_sheet','source_b_row','source_a_field','source_b_field','application_a','application_b','application_no_equal','score','decision','match_origin'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows([{k:m.get(k,'') for k in fields} for m in matches])
+        fields=['match_id','source_a_asset_id','source_b_asset_id','source_a_file','source_b_file','source_a_page','source_a_sheet','source_a_row','source_b_page','source_b_sheet','source_b_row','source_a_field','source_b_field','source_a_text','source_b_text','application_a','application_b','application_no_equal','score','decision','match_origin'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows([{k:m.get(k,'') for k in fields} for m in matches])
     update(100,'Completed')
     return summary

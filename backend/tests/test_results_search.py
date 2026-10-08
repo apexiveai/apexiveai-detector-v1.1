@@ -54,6 +54,36 @@ class ResultsSearchTests(unittest.TestCase):
         self.assertEqual(len(result['items']), 1)
         self.assertEqual(result['items'][0]['match_id'], 'M-3')
 
+    def test_search_can_find_text_only_mark_matches(self):
+        self.matches[0]['source_a_text'] = 'Example Wordmark'
+        self.matches[0]['decision'] = 'EXACT_TEXT_MARK_MATCH'
+        (self.root / 'job-id' / 'report' / 'matches.json').write_text(json.dumps(self.matches), encoding='utf8')
+
+        result = main.results('job-id', q='wordmark')
+        exact = main.results('job-id', decision='EXACT')
+
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['items'][0]['source_a_text'], 'Example Wordmark')
+        self.assertEqual(exact['total'], 2)
+
+    def test_extracted_mark_inventory_pages_all_six_thousand_assets(self):
+        report = self.root / 'job-id' / 'report'
+        assets = [
+            {'asset_id': f'A-{index + 1:06d}', 'page': index + 1, 'image_file': f'A_{index + 1:06d}.png'}
+            for index in range(6000)
+        ]
+        (report / 'assets_a.json').write_text(json.dumps(assets), encoding='utf8')
+
+        first = main.assets('job-id', 'A')
+        last = main.assets('job-id', 'A', offset=5900)
+
+        self.assertEqual(first['total'], 6000)
+        self.assertEqual(len(first['items']), 100)
+        self.assertEqual(first['items'][0]['asset_id'], 'A-000001')
+        self.assertEqual(last['items'][0]['asset_id'], 'A-005901')
+        self.assertEqual(last['items'][-1]['asset_id'], 'A-006000')
+        self.assertEqual(last['items'][-1]['asset_url'], '/api/jobs/job-id/assets/A/A_006000.png')
+
 
 if __name__ == '__main__':
     unittest.main()
