@@ -1,0 +1,56 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: production
+      DATA_DIR: /app/data
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-}
+      JWT_ALGORITHMS: ${JWT_ALGORITHMS:-HS256}
+      JWT_ISSUER: ${JWT_ISSUER:-}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://trademark.apexiveai.com}
+      MAX_FILE_BYTES: ${MAX_FILE_BYTES:-26214400}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-41943040}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-1000}
+      MAX_PDF_PAGE_PIXELS: ${MAX_PDF_PAGE_PIXELS:-40000000}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-40000000}
+      MAX_ASSETS_PER_SOURCE: ${MAX_ASSETS_PER_SOURCE:-6000}
+      MAX_WORKSHEET_ROWS: ${MAX_WORKSHEET_ROWS:-250000}
+      MAX_WORKSHEET_COLUMNS: ${MAX_WORKSHEET_COLUMNS:-256}
+      MAX_WORKERS: ${MAX_WORKERS:-2}
+      MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-8}
+      MAX_JOB_ATTEMPTS: ${MAX_JOB_ATTEMPTS:-3}
+      JOB_RETENTION_DAYS: ${JOB_RETENTION_DAYS:-30}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
+    volumes:
+      - trademark-data:/app/data
+    expose:
+      - "8020"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ""
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    restart: unless-stopped
+
+volumes:
+  trademark-data:

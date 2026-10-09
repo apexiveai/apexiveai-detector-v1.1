@@ -5,25 +5,38 @@ import {Upload,FileText,Table2,Play,RefreshCw,CheckCircle2,AlertTriangle,Search,
 import './styles.css';
 
 type FilePick={file:File|null};
-type Job={job_id:string;status:string;progress:number;message:string;identical_sources?:boolean;analysis_skipped?:boolean;matched?:number;unmatched_a?:number|null;unmatched_b?:number|null;exact_identity?:number;exact_text_matches?:number;very_high?:number;high?:number;source_a?:{assets:number|null;file:string};source_b?:{assets:number|null;file:string}};
-type Match={match_id:string;source_a_asset_id:string;source_b_asset_id:string;source_a_file:string;source_b_file:string;source_a_page?:number;source_a_sheet?:string;source_a_row?:number;source_b_page?:number;source_b_sheet?:string;source_b_row?:number;source_a_field?:string;source_b_field?:string;source_a_text?:string;source_b_text?:string;application_a:string;application_b:string;application_no_equal:boolean;score:number;decision:string;asset_a_url?:string|null;asset_b_url?:string|null;metrics?:{phash:number;dhash:number;ahash:number;ssim:number;contour_similarity:number;mask_iou:number;mask_ssim:number;sift_inliers:number}};
+type Job={job_id:string;status:string;progress:number;message:string;attempts?:number;identical_sources?:boolean;analysis_skipped?:boolean;matched?:number;unmatched_a?:number|null;unmatched_b?:number|null;exact_identity?:number;exact_text_matches?:number;very_high?:number;high?:number;source_a?:{assets:number|null;file:string};source_b?:{assets:number|null;file:string}};
+type Match={match_id:string;source_a_asset_id:string;source_b_asset_id:string;source_a_file:string;source_b_file:string;source_a_reference?:string;source_b_reference?:string;source_a_page?:number;source_a_sheet?:string;source_a_row?:number;source_a_column?:number;source_b_page?:number;source_b_sheet?:string;source_b_row?:number;source_b_column?:number;source_a_field?:string;source_b_field?:string;source_a_text?:string;source_b_text?:string;application_a:string;application_b:string;application_no_equal:boolean;score:number;decision:string;asset_a_url?:string|null;asset_b_url?:string|null;metrics?:{phash:number;dhash:number;ahash:number;ssim:number;contour_similarity:number;mask_iou:number;mask_ssim:number;sift_inliers:number}};
 type ResultPage={items:Match[];total:number};
-type MarkAsset={asset_id:string;source_file:string;source_type:string;application_no?:string;company?:string;mark?:string;mark_text?:string;mark_content_type?:string;page?:number;sheet?:string;row?:number;field_label?:string;image_file?:string;asset_url?:string|null};
+type MarkAsset={asset_id:string;source_file:string;source_type:string;application_no?:string;company?:string;mark?:string;mark_text?:string;mark_content_type?:string;source_reference?:string;page?:number;sheet?:string;row?:number;column?:number;field_label?:string;image_file?:string;asset_url?:string|null};
 type AssetPage={items:MarkAsset[];total:number};
 
-const API=(import.meta.env.VITE_API_URL||'http://127.0.0.1:8020').replace(/\/$/,'');
+const API=(import.meta.env.VITE_API_URL||'').trim().replace(/\/+$/,'');
 const pct=(x:number)=>`${Math.round(x*100)}%`;
+function apiFetch(input:RequestInfo|URL,init:RequestInit={}):Promise<Response>{
+ const headers=new Headers(init.headers);
+ const token=localStorage.getItem('apexive_token')||sessionStorage.getItem('apexive_token');
+ if(token)headers.set('Authorization',`Bearer ${token}`);
+ return fetch(input,{...init,headers}).catch((requestError:unknown)=>{
+  if(requestError instanceof TypeError){
+   const requestUrl=input instanceof Request?input.url:String(input);
+   const apiOrigin=new URL(requestUrl,window.location.origin).origin;
+   throw new Error(`Cannot reach API at ${apiOrigin}. Check that the backend is running and reachable. For separate frontend/API hosts, set VITE_API_URL and add this site's origin to backend CORS_ORIGINS.`);
+  }
+  throw requestError;
+ });
+}
 
 function Drop({label,pick,setPick}:{label:string;pick:FilePick;setPick:(x:FilePick)=>void}){
  const input=useRef<HTMLInputElement>(null);const [over,setOver]=useState(false);
- const accept='.pdf,.xlsx,.xlsm';
- const choose=(f?:File)=>{if(f && ['.pdf','.xlsx','.xlsm'].some(x=>f.name.toLowerCase().endsWith(x)))setPick({file:f})};
+ const accept='.pdf,.xlsx,.xlsm,.png,.jpg,.jpeg,.bmp,.webp,.tif,.tiff,.gif';
+ const choose=(f?:File)=>{if(f && ['.pdf','.xlsx','.xlsm','.png','.jpg','.jpeg','.bmp','.webp','.tif','.tiff','.gif'].some(x=>f.name.toLowerCase().endsWith(x)))setPick({file:f})};
  return <motion.div className={`drop ${over?'over':''}`} whileHover={{y:-4}} onDragOver={e=>{e.preventDefault();setOver(true)}} onDragLeave={()=>setOver(false)} onDrop={e=>{e.preventDefault();setOver(false);choose(e.dataTransfer.files[0])}} onClick={()=>input.current?.click()}>
    <input ref={input} type="file" accept={accept} hidden onChange={e=>choose(e.target.files?.[0])}/>
    <div className="dropIcon">{pick.file?.name.endsWith('.pdf')?<FileText/>:<Table2/>}</div>
    <div className="eyebrow">{label}</div>
    <h3>{pick.file?pick.file.name:'Drop PDF / XLSX / XLSM'}</h3>
-   <p>{pick.file?`${(pick.file.size/1024/1024).toFixed(2)} MB · ready`: 'Application No. is not required for visual matching.'}</p>
+   <p>{pick.file?`${(pick.file.size/1024/1024).toFixed(2)} MB · ready`: 'PDF, Excel workbook, or standalone raster logo.'}</p>
    <button type="button" className="ghost">{pick.file?'Change file':'Choose file'}</button>
  </motion.div>
 }
@@ -53,7 +66,7 @@ function App(){
   setLoading(true);setError('');setResults([]);
   try{
    const fd=new FormData();fd.append('file_a',a.file);fd.append('file_b',b.file);
-   const response=await fetch(`${API}/api/analyze`,{method:'POST',body:fd});
+   const response=await apiFetch(`${API}/api/analyze`,{method:'POST',body:fd});
    const data=await response.json().catch(()=>({}));
    if(!response.ok)throw new Error(data.detail||`Upload failed (${response.status}).`);
    if(!data.job_id)throw new Error('The server did not return an analysis job ID.');
@@ -63,8 +76,8 @@ function App(){
    setLoading(false);
   }
  };
- useEffect(()=>{if(!job?.job_id||job.status==='completed'||job.status==='error')return;const t=setInterval(async()=>{const r=await fetch(`${API}/api/jobs/${job.job_id}`);const state=await r.json().catch(()=>({}));if(!r.ok){setJob(current=>current?.job_id===job.job_id?{...current,status:'error',message:state.detail||'The analysis job is no longer available. Start a new analysis.'}:current);return}setJob({...state,job_id:job.job_id})},1000);return()=>clearInterval(t)},[job?.job_id,job?.status]);
- useEffect(()=>{if(job?.status==='completed'||job?.status==='error')setLoading(false)},[job?.status]);
+ useEffect(()=>{if(!job?.job_id||['completed','error','cancelled'].includes(job.status))return;const t=setInterval(async()=>{try{const r=await apiFetch(`${API}/api/jobs/${job.job_id}`);const state=await r.json().catch(()=>({}));if(!r.ok){setJob(current=>current?.job_id===job.job_id?{...current,status:'error',message:state.detail||'The analysis job is no longer available. Start a new analysis.'}:current);return}setJob({...state,job_id:job.job_id})}catch(requestError){const message=requestError instanceof Error?requestError.message:'Connection lost while checking job progress.';setJob(current=>current?.job_id===job.job_id?{...current,message}:current)}},1000);return()=>clearInterval(t)},[job?.job_id,job?.status]);
+ useEffect(()=>{if(job&&['completed','error','cancelled'].includes(job.status))setLoading(false)},[job?.status]);
  useEffect(()=>{
   if(job?.status!=='completed')return;
   const controller=new AbortController();
@@ -75,7 +88,7 @@ function App(){
    const decisions:Record<string,string>={EXACT:'EXACT',VERY_HIGH:'VERY_HIGH_VISUAL_SIMILARITY',HIGH:'HIGH_VISUAL_SIMILARITY'};
    if(decisions[filter])params.set('decision',decisions[filter]);
    try{
-    const response=await fetch(`${API}/api/jobs/${job.job_id}/results?${params}`,{signal:controller.signal});
+    const response=await apiFetch(`${API}/api/jobs/${job.job_id}/results?${params}`,{signal:controller.signal});
     const data=await response.json();
     if(!response.ok)throw new Error(data.detail||'Unable to load search results.');
     const resultPage=data as ResultPage;
@@ -94,7 +107,7 @@ function App(){
   const params=new URLSearchParams({offset:String((inventoryPage-1)*100),limit:'100'});
   if(inventoryQuery.trim())params.set('q',inventoryQuery.trim());
   setInventoryLoading(true);setInventoryError('');
-  fetch(`${API}/api/jobs/${job.job_id}/assets/${inventorySide}?${params}`,{signal:controller.signal})
+  apiFetch(`${API}/api/jobs/${job.job_id}/assets/${inventorySide}?${params}`,{signal:controller.signal})
    .then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.detail||'Unable to load extracted marks.');return data as AssetPage})
    .then(data=>{setInventoryItems(data.items);setInventoryTotal(data.total)})
    .catch(requestError=>{if(!controller.signal.aborted)setInventoryError(requestError instanceof Error?requestError.message:'Unable to load extracted marks.')})
@@ -103,15 +116,18 @@ function App(){
  },[job?.job_id,job?.status,inventorySide,inventoryPage,inventoryQuery]);
  const pageCount=Math.max(1,Math.ceil(resultCount/100));
  const inventoryPageCount=Math.max(1,Math.ceil(inventoryTotal/100));
+ const cancelJob=async()=>{if(!job)return;try{const response=await apiFetch(`${API}/api/jobs/${job.job_id}`,{method:'DELETE'});const state=await response.json();if(!response.ok)throw new Error(state.detail||'Unable to cancel the job.');setJob(state)}catch(requestError){setError(requestError instanceof Error?requestError.message:'Unable to cancel the job.')}};
+ const retryJob=async()=>{if(!job)return;try{const response=await apiFetch(`${API}/api/jobs/${job.job_id}/retry`,{method:'POST'});const state=await response.json();if(!response.ok)throw new Error(state.detail||'Unable to retry the job.');setJob(current=>current?{...current,...state,status:'queued',progress:0,message:'Retry queued'}:current);setLoading(true)}catch(requestError){setError(requestError instanceof Error?requestError.message:'Unable to retry the job.')}};
+ const downloadReport=async(filename:string)=>{if(!job)return;try{const response=await apiFetch(`${API}/api/jobs/${job.job_id}/files/${encodeURIComponent(filename)}`);if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'Unable to download this report.')}const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download=filename;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(requestError){setError(requestError instanceof Error?requestError.message:'Unable to download this report.')}};
 
  return <div className="app">
   <div className="noise"/><header><div className="brand"><div className="brandMark">A</div><div><strong>APEXIVE AI</strong><span>TRADEMARK VISUAL CONFLICT</span></div></div><div className="headerPill"><ShieldCheck size={15}/> VISUAL EVIDENCE ENGINE v4</div></header>
   <main>
    <section className="hero"><div className="heroCopy"><div className="eyebrow">GLOBAL TRADEMARK INTELLIGENCE</div><h1>Trademark<br/><em>Conflict Analysis</em></h1><p>Compare artwork and text marks across PDF records and every worksheet in your spreadsheets. Get structured evidence, precise source locations, and visual similarity insights.</p><div className="heroSignals"><span><i/> MULTI-FORMAT INGESTION</span><span><i/> PAGE &amp; SHEET INDEXED</span></div></div><NetworkVisual/></section>
    <section className="uploadGrid"><Drop label="SOURCE A" pick={a} setPick={setA}/><div className="versus"><span>VS</span><ArrowRight/></div><Drop label="SOURCE B" pick={b} setPick={setB}/></section>
-   <div className="action"><button className="run" disabled={!a.file||!b.file||loading} onClick={run}><Play size={18} fill="currentColor"/>{loading?'ANALYSIS RUNNING':'RUN VISUAL COMPARISON'}</button>{job&&<button className="reset" onClick={()=>{setJob(null);setResults([]);setA({file:null});setB({file:null});setError('')}}><RefreshCw size={16}/> New analysis</button>}</div>
+   <div className="action"><button className="run" disabled={!a.file||!b.file||loading} onClick={run}><Play size={18} fill="currentColor"/>{loading?'ANALYSIS RUNNING':'RUN VISUAL COMPARISON'}</button>{job&&['completed','error','cancelled'].includes(job.status)&&<button className="reset" onClick={()=>{setJob(null);setResults([]);setA({file:null});setB({file:null});setError('')}}><RefreshCw size={16}/> New analysis</button>}</div>
    {error&&<div className="request-error" role="alert"><AlertTriangle size={16}/>{error}</div>}
-   {job&&<section className="progressCard"><div className="progressTop"><span>{job.message||job.status}</span><b>{job.progress||0}%</b></div><div className="progress"><i style={{width:`${job.progress||0}%`}}/></div>{job.status==='error'?<div className="error"><AlertTriangle size={16}/>{job.message}</div>:<div className="tiny">{job.analysis_skipped?job.message:'Application-number equality is metadata only · visual matching remains independent.'}</div>}</section>}
+   {job&&<section className="progressCard"><div className="progressTop"><span>{job.message||job.status}</span><b>{job.progress||0}%</b></div><div className="progress"><i style={{width:`${job.progress||0}%`}}/></div>{job.status==='error'?<div className="error"><AlertTriangle size={16}/>{job.message}<button className="reset" onClick={retryJob}>Retry job</button></div>:job.status==='cancelled'?<div className="error">Analysis cancelled.</div>:<div className="tiny">{job.analysis_skipped?job.message:'Application-number equality is metadata only · visual matching remains independent.'}</div>}{['queued','running','cancelling'].includes(job.status)&&<button className="reset" onClick={cancelJob}>Cancel job</button>}</section>}
    {job?.status==='completed'&&<>
     <section className="stats"><Stat title="SOURCE A" value={job.source_a?.assets??0}/><Stat title="SOURCE B" value={job.source_b?.assets??0}/><Stat title="MATCHED MARKS" value={job.matched??0} accent/><Stat title="EXACT" value={(job.exact_identity??0)+(job.exact_text_matches??0)}/><Stat title="UNMATCHED A" value={job.unmatched_a??0}/><Stat title="UNMATCHED B" value={job.unmatched_b??0}/></section>
     <section className="inventory">
@@ -122,7 +138,7 @@ function App(){
      <div className="assetGrid">{inventoryItems.map(asset=><AssetCard key={asset.asset_id} asset={asset}/>)}</div>
      <div className="pager"><button disabled={inventoryPage<=1||inventoryLoading} onClick={()=>setInventoryPage(p=>p-1)}>← Previous</button><span>Page {inventoryPage} / {inventoryPageCount} · {inventoryTotal.toLocaleString()} marks</span><button disabled={inventoryPage>=inventoryPageCount||inventoryLoading} onClick={()=>setInventoryPage(p=>p+1)}>Next →</button></div>
     </section>
-    <section className="resultsHead"><div><div className="eyebrow">MATCH RESULTS</div><h2>{resultCount.toLocaleString()} mark matches</h2></div><div className="tools"><div className="search"><Search size={16}/><input aria-label="Search results" placeholder="ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ" value={query} onChange={e=>{setQuery(e.target.value);setPage(1)}}/></div><div className="filters">{['ALL','EXACT','VERY_HIGH','HIGH'].map(x=><button key={x} className={filter===x?'active':''} onClick={()=>{setFilter(x);setPage(1)}}>{x.replace('_',' ')}</button>)}</div><a className="download" href={`${API}/api/jobs/${job.job_id}/files/matches.csv`}><Download size={15}/> CSV</a></div></section>
+    <section className="resultsHead"><div><div className="eyebrow">MATCH RESULTS</div><h2>{resultCount.toLocaleString()} mark matches</h2></div><div className="tools"><div className="search"><Search size={16}/><input aria-label="Search results" placeholder="ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ" value={query} onChange={e=>{setQuery(e.target.value);setPage(1)}}/></div><div className="filters">{['ALL','EXACT','VERY_HIGH','HIGH'].map(x=><button key={x} className={filter===x?'active':''} onClick={()=>{setFilter(x);setPage(1)}}>{x.replace('_',' ')}</button>)}</div><button className="download" onClick={()=>downloadReport('matches.csv')}><Download size={15}/> CSV</button></div></section>
     {resultsError&&<div className="error"><AlertTriangle size={16}/>{resultsError}</div>}
     {resultsLoading&&<div className="tiny">Searching all matching logos…</div>}
     {!resultsLoading&&!resultsError&&resultCount===0&&<div className="tiny">No matching logos found. Try another application number or search term.</div>}
@@ -133,11 +149,15 @@ function App(){
  </div>
 }
 function Stat({title,value,accent=false}:{title:string;value:number|string;accent?:boolean}){return <div className={`stat ${accent?'accent':''}`}><span>{title}</span><strong>{typeof value==='number'?value.toLocaleString():value}</strong></div>}
-function MarkPreview({url,text,alt}:{url?:string|null;text?:string;alt:string}){return <div className="markPreview">{url?<img src={`${API}${url}`} alt={alt} loading="lazy"/>:<div className="markText">{text||'No image or readable text mark was extracted.'}</div>}</div>}
-function AssetCard({asset}:{asset:MarkAsset}){const text=asset.mark_text||asset.mark;const location=asset.page?`page ${asset.page}`:asset.sheet?`${asset.sheet} · row ${asset.row}`:'—';return <article className="assetCard"><MarkPreview url={asset.asset_url} text={text} alt={`${asset.asset_id} extracted mark`}/><div className="assetCardInfo"><b>{asset.asset_id}</b><span>{location}</span>{text&&asset.asset_url&&<small>{text}</small>}{asset.application_no&&<small>{asset.application_no}</small>}</div></article>}
+function MarkPreview({url,text,alt}:{url?:string|null;text?:string;alt:string}){
+ const [imageUrl,setImageUrl]=useState<string|null>(null);const [failed,setFailed]=useState(false);
+ useEffect(()=>{let cancelled=false;let objectUrl:string|undefined;setImageUrl(null);setFailed(false);if(!url)return()=>{cancelled=true};apiFetch(`${API}${url}`).then(response=>{if(!response.ok)throw new Error('Image download failed');return response.blob()}).then(blob=>{if(!cancelled){objectUrl=URL.createObjectURL(blob);setImageUrl(objectUrl)}}).catch(()=>{if(!cancelled)setFailed(true)});return()=>{cancelled=true;if(objectUrl)URL.revokeObjectURL(objectUrl)}},[url]);
+ return <div className="markPreview">{imageUrl?<img src={imageUrl} alt={alt} loading="lazy"/>:<div className="markText">{failed?text||'Logo preview unavailable.':text||'Loading mark preview…'}</div>}</div>
+}
+function AssetCard({asset}:{asset:MarkAsset}){const text=asset.mark_text||asset.mark;const location=asset.source_reference||(asset.page?`page ${asset.page}`:asset.sheet?`${asset.sheet} · row ${asset.row}`:'—');return <article className="assetCard"><MarkPreview url={asset.asset_url} text={text} alt={`${asset.asset_id} extracted mark`}/><div className="assetCardInfo"><b>{asset.asset_id}</b><span>{location}</span>{text&&asset.asset_url&&<small>{text}</small>}{asset.application_no&&<small>{asset.application_no}</small>}</div></article>}
 function MatchCard({m,i}:{m:Match;i:number}){return <motion.article className="match" initial={{opacity:0,y:15}} animate={{opacity:1,y:0}} transition={{delay:Math.min(i*.015,.25)}}>
  <div className="matchId"><span>{m.match_id}</span><b>{m.decision.replaceAll('_',' ')}</b></div>
- <div className="visualPair"><div className="asset"><span>SOURCE A</span><MarkPreview url={m.asset_a_url} text={m.source_a_text} alt={`${m.source_a_asset_id} mark`}/><small>{m.source_a_file}{m.source_a_page?` · page ${m.source_a_page}`:m.source_a_sheet?` · ${m.source_a_sheet} / row ${m.source_a_row}`:''}{m.source_a_field?` · ${m.source_a_field}`:''}</small></div><div className="linkLine"><div>↔</div><strong>{pct(m.score)}</strong></div><div className="asset"><span>SOURCE B</span><MarkPreview url={m.asset_b_url} text={m.source_b_text} alt={`${m.source_b_asset_id} mark`}/><small>{m.source_b_file}{m.source_b_page?` · page ${m.source_b_page}`:m.source_b_sheet?` · ${m.source_b_sheet} / row ${m.source_b_row}`:''}{m.source_b_field?` · ${m.source_b_field}`:''}</small></div></div>
+ <div className="visualPair"><div className="asset"><span>SOURCE A</span><MarkPreview url={m.asset_a_url} text={m.source_a_text} alt={`${m.source_a_asset_id} mark`}/><small>{m.source_a_file}{m.source_a_reference?` · ${m.source_a_reference}`:m.source_a_page?` · page ${m.source_a_page}`:m.source_a_sheet?` · ${m.source_a_sheet} / row ${m.source_a_row}`:''}{m.source_a_field?` · ${m.source_a_field}`:''}</small></div><div className="linkLine"><div>↔</div><strong>{pct(m.score)}</strong></div><div className="asset"><span>SOURCE B</span><MarkPreview url={m.asset_b_url} text={m.source_b_text} alt={`${m.source_b_asset_id} mark`}/><small>{m.source_b_file}{m.source_b_reference?` · ${m.source_b_reference}`:m.source_b_page?` · page ${m.source_b_page}`:m.source_b_sheet?` · ${m.source_b_sheet} / row ${m.source_b_row}`:''}{m.source_b_field?` · ${m.source_b_field}`:''}</small></div></div>
  <div className="meta"><div><span>Application A</span><b>{m.application_a||'—'}</b></div><div><span>Application B</span><b>{m.application_b||'—'}</b></div><div><span>App No. equal</span><b>{m.application_no_equal?'YES':'NO — STILL MATCHED'}</b></div></div>
  {m.metrics&&<div className="metrics"><Metric name="pHash" value={m.metrics.phash}/><Metric name="dHash" value={m.metrics.dhash}/><Metric name="SSIM" value={m.metrics.ssim}/><Metric name="Contour" value={m.metrics.contour_similarity}/><Metric name="Mask IoU" value={m.metrics.mask_iou}/><Metric name="Mask SSIM" value={m.metrics.mask_ssim}/><div className="sift"><span>SIFT inliers</span><b>{m.metrics.sift_inliers}</b></div></div>}
  </motion.article>}

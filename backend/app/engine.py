@@ -1,11 +1,13 @@
 from pathlib import Path
 from functools import lru_cache
 import csv, hashlib, json, re, traceback, zipfile, io, math, shutil, subprocess, tempfile, sys
+import os
 import pymupdf
 import cv2
 import numpy as np
 from PIL import Image
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from skimage.metrics import structural_similarity as ssim
 import xml.etree.ElementTree as ET
 
@@ -14,6 +16,10 @@ APP_RE=re.compile(r'(?<![A-Z0-9])(?:[A-Z]{1,8}/)?[T7I]\s*/\s*(\d{4})\s*/\s*(\d{3
 MARK_WORDS={'MARK','LOGO','DEVICE','TRADEMARK','TRADEMARKS','LABEL','BRAND','FIGURE'}
 PDF_FIELD_CODE_RE=re.compile(r'\(\d{3}\)')
 MARK_HEADERS={word.lower() for word in MARK_WORDS}|{'reproductionofmark','mainobjective','mainobjectives','emainobjective','emainobjectives'}
+STANDALONE_IMAGE_EXTENSIONS={'.png','.jpg','.jpeg','.bmp','.webp','.tif','.tiff','.gif'}
+MAX_ASSETS_PER_SOURCE=int(os.getenv('MAX_ASSETS_PER_SOURCE','6000'))
+MAX_WORKSHEET_ROWS=int(os.getenv('MAX_WORKSHEET_ROWS','250000'))
+MAX_WORKSHEET_COLUMNS=int(os.getenv('MAX_WORKSHEET_COLUMNS','256'))
 
 def norm_app(v):
     if v is None:return None
@@ -210,20 +216,106 @@ def page_text_words(page):
     try:return page.get_text('words')
     except:return []
 
+def ocr_page_fields(page):
+    try:
+        import pytesseract
+        from pytesseract import Output
+        scale=1.5
+        pix=page.get_pixmap(matrix=pymupdf.Matrix(scale,scale),alpha=False)
+        image=Image.open(io.BytesIO(pix.tobytes('png')))
+        data=pytesseract.image_to_data(image,output_type=Output.DICT,config='--psm 6')
+    except pytesseract.TesseractNotFoundError:
+        raise RuntimeError('Scanned PDF text needs the Tesseract OCR executable, which is not available.')
+    text_words=[];codes=[];lines=[]
+    for index,raw in enumerate(data.get('text',[])):
+        token=str(raw or '').strip()
+        if not token:continue
+        x0=float(data['left'][index])/scale
+        y0=float(data['top'][index])/scale
+        x1=x0+float(data['width'][index])/scale
+        y1=y0+float(data['height'][index])/scale
+        text_words.append((x0,y0,x1,y1,token))
+        lines.append(token)
+        if re.fullmatch(r'[\(\[]?(\d{3})[\)\]]?',token) and x0<page.rect.width*.35:
+            code=token.strip('()[]')
+            codes.append((pymupdf.Rect(x0,y0,x1,y1),code))
+    return [rect for rect,code in codes if code=='540'],text_words,' '.join(lines)
+
 def normalized_mark_text(value):
     return re.sub(r'\s+',' ',str(value or '')).strip().casefold()
 
+def normalize_asset_record(asset,path,side,index):
+    asset.setdefault('asset_id',f'{side}-{index:06d}')
+    asset.setdefault('source_file',path.name)
+    asset.setdefault('source_type',path.suffix.lower().lstrip('.'))
+    asset.setdefault('page',None)
+    asset.setdefault('sheet',None)
+    asset.setdefault('row',None)
+    asset.setdefault('column',None)
+    asset.setdefault('application_no','')
+    asset.setdefault('company','')
+    asset.setdefault('mark','')
+    asset.setdefault('mark_text','')
+    asset.setdefault('mark_content_type','image' if asset.get('image_file') else 'text')
+    asset.setdefault('field_code','')
+    asset.setdefault('field_label','')
+    asset.setdefault('extract_method','')
+    asset['source_reference']=(
+        f"page {asset['page']}" if asset.get('page') is not None else
+        f"{asset['sheet']}!{get_column_letter(asset['column']) if asset.get('column') else ''}{asset['row']}" if asset.get('sheet') else
+        asset.get('field_label') or path.name
+    )
+    return asset
+
+def standalone_image_assets(path,out,side='A'):
+    try:
+        with Image.open(path) as source:
+            source.seek(0)
+            source.load()
+            im=cv2.cvtColor(np.asarray(source.convert('RGB')),cv2.COLOR_RGB2BGR)
+    except (OSError,ValueError) as exc:
+        raise ValueError(f"Could not decode standalone logo image '{path.name}'.") from exc
+    if im is None:
+        raise ValueError(f"Could not decode standalone logo image '{path.name}'.")
+    fn=f'{side}_000001.png'
+    if not cv2.imwrite(str(out/fn),im):
+        raise ValueError(f"Could not save normalized logo image '{path.name}'.")
+    return [{
+        'asset_id':f'{side}-000001',
+        'source_type':'image',
+        'source_file':path.name,
+        'application_no':'',
+        'mark_text':'',
+        'mark_content_type':'image',
+        'field_code':'',
+        'field_label':'Standalone logo',
+        'image_file':fn,
+        'extract_method':'standalone_image_normalization',
+    }]
+
 def pdf_assets(path,out,progress,side='A'):
-    doc=pymupdf.open(str(path));assets=[];pages=len(doc);asset_no=0
+    with pymupdf.open(str(path)) as doc:
+        return _pdf_assets_from_doc(doc,path,out,progress,side)
+
+def _pdf_assets_from_doc(doc,path,out,progress,side):
+    assets=[];pages=len(doc);asset_no=0
     for pi,page in enumerate(doc):
         progress(int(pi/max(pages,1)*40),f'Extracting PDF: page {pi+1}/{pages}')
         fields=page.search_for('(540)')
         applications=page_applications(page)
+        ocr_mode=False;ocr_text=''
+        words=page.get_text('words')
+        if not fields and not words:
+            fields,words,ocr_text=ocr_page_fields(page)
+            ocr_mode=bool(fields)
         if not fields:
             progress(int((pi+1)/max(pages,1)*40),f'Extracting PDF: page {pi+1}/{pages}')
             continue
-        words=page.get_text('words')
-        code_words=[word for word in words if PDF_FIELD_CODE_RE.fullmatch(word[4]) and word[0]<120]
+        code_words=[
+            word for word in words
+            if (PDF_FIELD_CODE_RE.fullmatch(word[4]) or (ocr_mode and re.fullmatch(r'[\(\[]?\d{3}[\)\]]?',word[4])))
+            and word[0]<page.rect.width*.35
+        ]
         image_rects=[]
         for info in page.get_images(full=True):
             for rect in page.get_image_rects(info[0],transform=False):
@@ -231,6 +323,8 @@ def pdf_assets(path,out,progress,side='A'):
                 image_rects.append(rect)
         vector_rects=[drawing['rect'] for drawing in page.get_drawings() if drawing.get('rect')]
         for field in fields:
+            if len(assets)>=MAX_ASSETS_PER_SOURCE:
+                raise ValueError(f'PDF contains more than {MAX_ASSETS_PER_SOURCE} mark records.')
             next_codes=[word[1] for word in code_words if word[1]>=field.y1-2 and word[1]>field.y0]
             field_bottom=min(next_codes,default=page.rect.y1)
             field_top=max(page.rect.y0,field.y0-8)
@@ -238,9 +332,14 @@ def pdf_assets(path,out,progress,side='A'):
                 rect for rect in image_rects
                 if rect.x0>=field.x1+20 and field_top<=((rect.y0+rect.y1)/2)<field_bottom
             ]
-            method='pdf_540_embedded_image'
+            method='pdf_540_ocr_scan' if ocr_mode else 'pdf_540_embedded_image'
             mark_text=''
-            if candidates:
+            if ocr_mode:
+                bbox=pymupdf.Rect(
+                    max(page.rect.x0,field.x1+8),field_top,
+                    page.rect.x1,max(field_top+1,min(page.rect.y1,field_bottom)),
+                )
+            elif candidates:
                 bbox=pymupdf.Rect(
                     min(rect.x0 for rect in candidates),min(rect.y0 for rect in candidates),
                     max(rect.x1 for rect in candidates),max(rect.y1 for rect in candidates),
@@ -282,7 +381,7 @@ def pdf_assets(path,out,progress,side='A'):
             asset_no+=1;fn=f'{side}_{asset_no:06d}.png';cv2.imwrite(str(out/fn),im)
             application_no=(
                 min(applications,key=lambda item:abs(item[0]-(field.y0+field.y1)/2))[1]
-                if applications else app_metadata(page.get_text('text'))
+                if applications else app_metadata(page.get_text('text') or ocr_text)
             )
             assets.append({'asset_id':f'{side}-{asset_no:06d}','source_type':'pdf','source_file':path.name,'page':pi+1,'bbox':[bbox.x0,bbox.y0,bbox.x1,bbox.y1],'application_no':application_no,'field_code':'(540)','field_label':'(540) text mark' if method=='pdf_540_text_mark' else '(540) logo','mark_text':mark_text,'mark_content_type':'text' if method=='pdf_540_text_mark' else 'image','image_file':fn,'extract_method':method})
         progress(int((pi+1)/max(pages,1)*40),f'Extracting PDF: page {pi+1}/{pages}')
@@ -314,10 +413,18 @@ def ooxml_images(path):
 def xlsx_assets(path,out,progress,side='A'):
     progress(45,'Reading workbook values and indexing embedded images')
     raw=ooxml_images(path);wb=load_workbook(path,data_only=True,read_only=True,keep_links=False);assets=[];asset_no=0
+    if len(raw)>MAX_ASSETS_PER_SOURCE:
+        wb.close()
+        raise ValueError(f'Workbook contains more than {MAX_ASSETS_PER_SOURCE} embedded mark images.')
     image_sheets={image[0] for image in raw}
     try:
         for ws in wb.worksheets:
             max_row=ws.max_row or 0;max_col=max(ws.max_column or 0,1)
+            if max_row>MAX_WORKSHEET_ROWS or max_col>MAX_WORKSHEET_COLUMNS:
+                raise ValueError(
+                    f"Worksheet '{ws.title}' exceeds configured row/column limits "
+                    f"({MAX_WORKSHEET_ROWS} rows, {MAX_WORKSHEET_COLUMNS} columns)."
+                )
             mark_col=None;mark_header_row=0;headers={}
             header_end=min(20,max_row)
             if header_end:
@@ -357,8 +464,12 @@ def xlsx_assets(path,out,progress,side='A'):
                 app=str(cell(headers.get('app',1)) or '');company=str(cell(headers.get('company',2)) or '') if max_col>=2 else '';mark=str(cell(mark_col) or '')
                 if items:
                     for im,rr,col,ext in items:
+                        if asset_no>=MAX_ASSETS_PER_SOURCE:
+                            raise ValueError(f'Workbook contains more than {MAX_ASSETS_PER_SOURCE} mark records.')
                         asset_no+=1;fn=f'{side}_{asset_no:06d}.png';cv2.imwrite(str(out/fn),im);assets.append({'asset_id':f'{side}-{asset_no:06d}','source_type':'xlsx','source_file':path.name,'sheet':ws.title,'row':row,'column':col,'application_no':norm_app(app) or app,'company':company,'mark':mark,'mark_text':mark,'mark_content_type':'image','field_code':'Mark','field_label':'Mark column logo','image_file':fn,'extract_method':'xlsx_mark_column_image','media_ext':ext})
                 elif mark.strip():
+                    if asset_no>=MAX_ASSETS_PER_SOURCE:
+                        raise ValueError(f'Workbook contains more than {MAX_ASSETS_PER_SOURCE} mark records.')
                     asset_no+=1;assets.append({'asset_id':f'{side}-{asset_no:06d}','source_type':'xlsx','source_file':path.name,'sheet':ws.title,'row':row,'column':mark_col,'application_no':norm_app(app) or app,'company':company,'mark':mark,'mark_text':mark,'mark_content_type':'text','field_code':'Mark','field_label':'Mark column text mark','extract_method':'xlsx_mark_column_text'})
     finally:
         wb.close()
@@ -367,7 +478,14 @@ def xlsx_assets(path,out,progress,side='A'):
 
 def extract(path,side,out,progress):
     ext=path.suffix.lower()
-    return pdf_assets(path,out,progress,side) if ext=='.pdf' else xlsx_assets(path,out,progress,side)
+    if ext=='.pdf':
+        assets=pdf_assets(path,out,progress,side)
+    elif ext in STANDALONE_IMAGE_EXTENSIONS:
+        assets=standalone_image_assets(path,out,side)
+        progress(50,f'Normalized standalone logo: {path.name}')
+    else:
+        assets=xlsx_assets(path,out,progress,side)
+    return [normalize_asset_record(asset,path,side,index) for index,asset in enumerate(assets,1)]
 
 def run(job_dir,file_a,file_b,update):
     work=job_dir/'assets';work.mkdir(parents=True,exist_ok=True);report=job_dir/'report';report.mkdir(parents=True,exist_ok=True)
@@ -401,8 +519,12 @@ def run(job_dir,file_a,file_b,update):
                 'source_b_page':b.get('page'),
                 'source_a_sheet':a.get('sheet'),
                 'source_a_row':a.get('row'),
+                'source_a_column':a.get('column'),
                 'source_b_sheet':b.get('sheet'),
                 'source_b_row':b.get('row'),
+                'source_b_column':b.get('column'),
+                'source_a_reference':a.get('source_reference'),
+                'source_b_reference':b.get('source_reference'),
                 'source_a_field':a.get('field_label',''),
                 'source_b_field':b.get('field_label',''),
                 'application_a':a.get('application_no',''),
@@ -464,7 +586,7 @@ def run(job_dir,file_a,file_b,update):
                 elif score>=.70:decision='HIGH_VISUAL_SIMILARITY'
                 else:continue
                 matched_b.add(b['asset_id'])
-                matches.append({'match_id':f'M-{len(matches)+1:06d}','source_a_asset_id':a['asset_id'],'source_b_asset_id':b['asset_id'],'source_a_file':a['source_file'],'source_b_file':b['source_file'],'source_a_page':a.get('page'),'source_b_page':b.get('page'),'source_a_sheet':a.get('sheet'),'source_a_row':a.get('row'),'source_b_sheet':b.get('sheet'),'source_b_row':b.get('row'),'source_a_field':a.get('field_label',''),'source_b_field':b.get('field_label',''),'application_a':a.get('application_no',''),'application_b':b.get('application_no',''),'application_no_equal':bool(a.get('application_no') and b.get('application_no') and a.get('application_no')==b.get('application_no')),'score':round(score,6),'decision':decision,'match_origin':origin,'metrics':detail,'asset_a_url':f"/api/jobs/{job_dir.name}/assets/A/{a['image_file']}",'asset_b_url':f"/api/jobs/{job_dir.name}/assets/B/{b['image_file']}"})
+                matches.append({'match_id':f'M-{len(matches)+1:06d}','source_a_asset_id':a['asset_id'],'source_b_asset_id':b['asset_id'],'source_a_file':a['source_file'],'source_b_file':b['source_file'],'source_a_page':a.get('page'),'source_b_page':b.get('page'),'source_a_sheet':a.get('sheet'),'source_a_row':a.get('row'),'source_a_column':a.get('column'),'source_b_sheet':b.get('sheet'),'source_b_row':b.get('row'),'source_b_column':b.get('column'),'source_a_reference':a.get('source_reference'),'source_b_reference':b.get('source_reference'),'source_a_field':a.get('field_label',''),'source_b_field':b.get('field_label',''),'application_a':a.get('application_no',''),'application_b':b.get('application_no',''),'application_no_equal':bool(a.get('application_no') and b.get('application_no') and a.get('application_no')==b.get('application_no')),'score':round(score,6),'decision':decision,'match_origin':origin,'metrics':detail,'asset_a_url':f"/api/jobs/{job_dir.name}/assets/A/{a['image_file']}",'asset_b_url':f"/api/jobs/{job_dir.name}/assets/B/{b['image_file']}"})
             update(55+int((idx+1)/max(total,1)*40),f'Matching logos: {idx+1}/{total}')
     matched_asset_pairs={(match['source_a_asset_id'],match['source_b_asset_id']) for match in matches}
     text_assets_b={}
@@ -492,6 +614,8 @@ def run(job_dir,file_a,file_b,update):
             'source_a_page':asset_a.get('page'),'source_b_page':asset_b.get('page'),
             'source_a_sheet':asset_a.get('sheet'),'source_a_row':asset_a.get('row'),
             'source_b_sheet':asset_b.get('sheet'),'source_b_row':asset_b.get('row'),
+            'source_a_column':asset_a.get('column'),'source_b_column':asset_b.get('column'),
+            'source_a_reference':asset_a.get('source_reference'),'source_b_reference':asset_b.get('source_reference'),
             'source_a_field':asset_a.get('field_label',''),'source_b_field':asset_b.get('field_label',''),
             'application_a':asset_a.get('application_no',''),'application_b':asset_b.get('application_no',''),
             'application_no_equal':bool(asset_a.get('application_no') and asset_b.get('application_no') and asset_a.get('application_no')==asset_b.get('application_no')),
@@ -510,6 +634,6 @@ def run(job_dir,file_a,file_b,update):
     summary={'source_a':{'file':file_a.name,'type':file_a.suffix.lower(),'assets':len(A),'sha256':hash_a},'source_b':{'file':file_b.name,'type':file_b.suffix.lower(),'assets':len(B),'sha256':hash_b},'matched':len(matches),'unmatched_a':len(A)-len({m['source_a_asset_id'] for m in matches}),'unmatched_b':len(B)-len(matched_b),'exact_identity':sum(m['decision']=='EXACT_VISUAL_IDENTITY' for m in matches),'exact_text_matches':sum(m['decision']=='EXACT_TEXT_MARK_MATCH' for m in matches),'very_high':sum(m['decision']=='VERY_HIGH_VISUAL_SIMILARITY' for m in matches),'high':sum(m['decision']=='HIGH_VISUAL_SIMILARITY' for m in matches),'application_number_equal_matches':sum(m['application_no_equal'] for m in matches),'application_number_used_for_matching':False,'identical_sources':identical_sources,'analysis_skipped':False,'same_file_logo_scan':identical_sources,'engine':'Apexive AI Trademark Visual Conflict Engine v4','message':note,'note':note}
     (report/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf8');(report/'matches.json').write_text(json.dumps(matches,ensure_ascii=False,indent=2),encoding='utf8');(report/'assets_a.json').write_text(json.dumps(A,ensure_ascii=False,indent=2),encoding='utf8');(report/'assets_b.json').write_text(json.dumps(B,ensure_ascii=False,indent=2),encoding='utf8')
     with open(report/'matches.csv','w',newline='',encoding='utf-8-sig') as f:
-        fields=['match_id','source_a_asset_id','source_b_asset_id','source_a_file','source_b_file','source_a_page','source_a_sheet','source_a_row','source_b_page','source_b_sheet','source_b_row','source_a_field','source_b_field','source_a_text','source_b_text','application_a','application_b','application_no_equal','score','decision','match_origin'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows([{k:m.get(k,'') for k in fields} for m in matches])
+        fields=['match_id','source_a_asset_id','source_b_asset_id','source_a_file','source_b_file','source_a_page','source_a_sheet','source_a_row','source_a_column','source_a_reference','source_b_page','source_b_sheet','source_b_row','source_b_column','source_b_reference','source_a_field','source_b_field','source_a_text','source_b_text','application_a','application_b','application_no_equal','score','decision','match_origin'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows([{k:m.get(k,'') for k in fields} for m in matches])
     update(100,'Completed')
     return summary

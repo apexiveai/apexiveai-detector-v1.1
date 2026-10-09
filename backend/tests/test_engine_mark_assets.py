@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 
 from app.engine import (
     cv,
+    extract,
     pdf_assets,
     prepare_verification,
     run,
@@ -93,6 +94,24 @@ class MarkAssetExtractionTests(unittest.TestCase):
         self.assertEqual(assets[0]['field_label'], '(540) text mark')
         self.assertEqual(assets[0]['extract_method'], 'pdf_540_text_mark')
         self.assertTrue((self.root / assets[0]['image_file']).is_file())
+
+    def test_scanned_pdf_uses_ocr_coordinates_to_extract_the_540_region(self):
+        pdf_path = self.root / 'scanned.pdf'
+        doc = pymupdf.open()
+        page = doc.new_page(width=300, height=300)
+        page.insert_image(page.rect, stream=self.image_bytes)
+        doc.save(pdf_path)
+        doc.close()
+        code = pymupdf.Rect(20, 40, 48, 50)
+        ocr_words = [(20.0, 40.0, 48.0, 50.0, '540')]
+
+        with patch('app.engine.ocr_page_fields', return_value=([code], ocr_words, 'T/2026/001111 540')):
+            assets = pdf_assets(pdf_path, self.root, lambda *_: None)
+
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]['extract_method'], 'pdf_540_ocr_scan')
+        self.assertEqual(assets[0]['application_no'], 'T/2026/001111')
+        self.assertEqual(assets[0]['mark_content_type'], 'image')
 
     def test_pdf_extracts_marks_from_a_thousand_pages(self):
         pdf_path = self.root / 'thousand_pages.pdf'
@@ -281,7 +300,65 @@ class MarkAssetExtractionTests(unittest.TestCase):
         self.assertEqual(summary['matched'], 1)
         self.assertEqual(matches[0]['decision'], 'EXACT_TEXT_MARK_MATCH')
         self.assertEqual(matches[0]['source_a_text'], 'Example Wordmark')
+        self.assertEqual(matches[0]['source_a_reference'], 'page 1')
+        self.assertEqual(matches[0]['source_b_reference'], 'Sheet!B2')
         self.assertIsNone(matches[0]['asset_b_url'])
+
+
+    def test_standalone_logos_share_normalized_records_and_comparison(self):
+        source_a = self.root / 'logo-a.png'
+        source_b = self.root / 'logo-b.png'
+        source_a.write_bytes(self.image_bytes)
+        source_b.write_bytes(self.image_bytes)
+        assets_dir = self.root / 'normalized'
+        assets_dir.mkdir()
+
+        records = extract(source_a, 'A', assets_dir, lambda *_: None)
+        summary = run(self.root / 'job', source_a, source_b, lambda *_: None)
+        matches = json.loads((self.root / 'job' / 'report' / 'matches.json').read_text(encoding='utf8'))
+
+        self.assertEqual(records[0]['source_type'], 'image')
+        self.assertEqual(records[0]['source_reference'], 'Standalone logo')
+        self.assertEqual(records[0]['mark_content_type'], 'image')
+        self.assertTrue((assets_dir / records[0]['image_file']).is_file())
+        self.assertEqual(summary['matched'], 1)
+        self.assertEqual(matches[0]['decision'], 'EXACT_VISUAL_IDENTITY')
+        self.assertEqual(matches[0]['source_a_reference'], 'Standalone logo')
+
+    def test_unrelated_standalone_marks_do_not_create_a_match(self):
+        source_a = self.root / 'round-logo.png'
+        source_b = self.root / 'solid-logo.png'
+        round_logo = Image.new('RGB', (40, 30), 'white')
+        ImageDraw.Draw(round_logo).ellipse((3, 2, 37, 28), fill='black')
+        round_logo.save(source_a)
+        Image.new('RGB', (40, 30), 'black').save(source_b)
+
+        summary = run(self.root / 'unrelated-job', source_a, source_b, lambda *_: None)
+
+        self.assertEqual(summary['matched'], 0)
+
+    def test_duplicate_marks_remain_distinct_inventory_records(self):
+        source_a = self.root / 'duplicates-a.xlsx'
+        source_b = self.root / 'duplicates-b.xlsx'
+        for path, rows in ((source_a, (2, 3)), (source_b, (2,))):
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(['Application No.', 'Mark'])
+            for row in rows:
+                sheet.cell(row=row, column=1, value=f'T/2026/{row:06d}')
+                sheet.add_image(SpreadsheetImage(str(self.image_path)), f'B{row}')
+            workbook.save(path)
+            workbook.close()
+
+        job_dir = self.root / 'duplicates-job'
+        summary = run(job_dir, source_a, source_b, lambda *_: None)
+        assets_a = json.loads((job_dir / 'report' / 'assets_a.json').read_text(encoding='utf8'))
+        matches = json.loads((job_dir / 'report' / 'matches.json').read_text(encoding='utf8'))
+
+        self.assertEqual(len(assets_a), 2)
+        self.assertEqual(len({asset['asset_id'] for asset in assets_a}), 2)
+        self.assertEqual(summary['matched'], 2)
+        self.assertTrue(all(match['source_b_reference'] == 'Sheet!B2' for match in matches))
 
 
 if __name__ == '__main__':
