@@ -1,0 +1,29 @@
+{
+  "source_a": {
+    "file": "TM-2026-8 Publication ( Part-1).pdf",
+    "type": ".pdf",
+    "assets": 351,
+    "sha256": "479ae4b344c251ad5d8fd4e3ab37cc32f018f0752cf882f3af31268707ce1f74"
+  },
+  "source_b": {
+    "file": "TM-2026-8 Publication ( Part-1).pdf",
+    "type": ".pdf",
+    "assets": 351,
+    "sha256": "479ae4b344c251ad5d8fd4e3ab37cc32f018f0752cf882f3af31268707ce1f74"
+  },
+  "matched": 492,
+  "unmatched_a": 0,
+  "unmatched_b": 0,
+  "exact_identity": 351,
+  "exact_text_matches": 141,
+  "very_high": 0,
+  "high": 0,
+  "application_number_equal_matches": 350,
+  "application_number_used_for_matching": false,
+  "identical_sources": true,
+  "analysis_skipped": false,
+  "same_file_logo_scan": true,
+  "engine": "Apexive AI Trademark Visual Conflict Engine v4",
+  "message": "Identical source files: logo marks were extracted once and matched directly.",
+  "note": "Identical source files: logo marks were extracted once and matched directly."
+}
