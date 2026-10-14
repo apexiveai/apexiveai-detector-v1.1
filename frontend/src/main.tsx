@@ -61,6 +61,43 @@ function Metric({name,value}:{name:string;value:number}){return <div className="
 
 function App(){
  const [a,setA]=useState<FilePick>({file:null}),[b,setB]=useState<FilePick>({file:null}),[job,setJob]=useState<Job|null>(null),[results,setResults]=useState<Match[]>([]),[resultCount,setResultCount]=useState(0),[filter,setFilter]=useState('ALL'),[query,setQuery]=useState(''),[loading,setLoading]=useState(false),[error,setError]=useState(''),[resultsLoading,setResultsLoading]=useState(false),[resultsError,setResultsError]=useState(''),[page,setPage]=useState(1),[inventorySide,setInventorySide]=useState<'A'|'B'>('A'),[inventoryItems,setInventoryItems]=useState<MarkAsset[]>([]),[inventoryTotal,setInventoryTotal]=useState(0),[inventoryPage,setInventoryPage]=useState(1),[inventoryQuery,setInventoryQuery]=useState(''),[inventoryLoading,setInventoryLoading]=useState(false),[inventoryError,setInventoryError]=useState('');
+ const [accessState,setAccessState]=useState<{loading:boolean;error:string}>({loading:true,error:''});
+ useEffect(()=>{
+  let cancelled=false;
+  const initializeAccess=async()=>{
+   const params=new URLSearchParams(window.location.search);
+   const code=params.get('access_code');
+   if(code){
+    params.delete('access_code');
+    const query=params.toString();
+    window.history.replaceState(null,'',window.location.pathname+(query?'?'+query:'')+window.location.hash);
+    sessionStorage.removeItem('apexive_token');
+    localStorage.removeItem('apexive_token');
+   }
+   try{
+    let token=sessionStorage.getItem('apexive_token')||localStorage.getItem('apexive_token')||'';
+    if(code){
+     const response=await fetch(API+'/api/auth/exchange',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
+     const data=await response.json().catch(()=>({}));
+     if(!response.ok)throw new Error(data.detail||'Product launch link is invalid or expired. Open Trademark Conflict from your dashboard again.');
+     if(typeof data.access_token!=='string'||data.product_key!=='trademark')throw new Error('The product authorization service returned an invalid session.');
+     token=data.access_token;
+     sessionStorage.setItem('apexive_token',token);
+    }
+    if(!token)throw new Error('Open Trademark Conflict from your Apexive dashboard to verify product access.');
+    const response=await fetch(API+'/api/auth/session',{headers:{Authorization:'Bearer '+token},cache:'no-store'});
+    const data=await response.json().catch(()=>({}));
+    if(response.status===401||response.status===403){sessionStorage.removeItem('apexive_token');localStorage.removeItem('apexive_token');}
+    if(!response.ok)throw new Error(data.detail||'This account is not authorized to use Trademark Conflict.');
+    if(!cancelled)setAccessState({loading:false,error:''});
+   }catch(accessError){
+    if(!cancelled)setAccessState({loading:false,error:accessError instanceof Error?accessError.message:'Unable to verify product access.'});
+   }
+  };
+  void initializeAccess();
+  return()=>{cancelled=true};
+ },[]);
+
  const run=async()=>{
   if(!a.file||!b.file)return;
   setLoading(true);setError('');setResults([]);
@@ -120,6 +157,8 @@ function App(){
  const retryJob=async()=>{if(!job)return;try{const response=await apiFetch(`${API}/api/jobs/${job.job_id}/retry`,{method:'POST'});const state=await response.json();if(!response.ok)throw new Error(state.detail||'Unable to retry the job.');setJob(current=>current?{...current,...state,status:'queued',progress:0,message:'Retry queued'}:current);setLoading(true)}catch(requestError){setError(requestError instanceof Error?requestError.message:'Unable to retry the job.')}};
  const downloadReport=async(filename:string)=>{if(!job)return;try{const response=await apiFetch(`${API}/api/jobs/${job.job_id}/files/${encodeURIComponent(filename)}`);if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'Unable to download this report.')}const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download=filename;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(requestError){setError(requestError instanceof Error?requestError.message:'Unable to download this report.')}};
 
+ if(accessState.loading)return <main className="app-shell"><div className="product-gate-loading">VERIFYING PRODUCT ACCESS?</div></main>;
+ if(accessState.error)return <main className="app-shell"><section className="results-card"><div className="eyebrow">PRODUCT ACCESS LOCKED</div><h2>Unable to open Trademark Conflict</h2><p>{accessState.error}</p><button className="reset-button" onClick={()=>window.history.back()}>RETURN TO APEXIVE</button></section></main>;
  return <div className="app">
   <div className="noise"/><header><div className="brand"><div className="brandMark">A</div><div><strong>APEXIVE AI</strong><span>TRADEMARK VISUAL CONFLICT</span></div></div><div className="headerPill"><ShieldCheck size={15}/> VISUAL EVIDENCE ENGINE v4</div></header>
   <main>

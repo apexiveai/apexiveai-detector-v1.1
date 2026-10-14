@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,7 +33,12 @@ class ResultsSearchTests(unittest.TestCase):
         ]
         (report / 'matches.json').write_text(json.dumps(self.matches), encoding='utf8')
         self.data_patch = patch.object(main, 'DATA', self.root)
-        self.jobs_patch = patch.dict(main.JOBS, {'job-id': {'status': 'completed'}})
+        self.tenant_id = 'test-tenant'
+        self.request = SimpleNamespace(state=SimpleNamespace(tenant_id=self.tenant_id))
+        self.jobs_patch = patch.dict(
+            main.JOBS,
+            {'job-id': {'status': 'completed', '_tenant_id': self.tenant_id}},
+        )
         self.data_patch.start()
         self.jobs_patch.start()
 
@@ -42,13 +48,20 @@ class ResultsSearchTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_search_matches_application_number_on_either_source(self):
-        result = main.results('job-id', q='t/2026/000002')
+        result = main.results('job-id', q='t/2026/000002', request=self.request)
 
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['items'][0]['application_b'], 'T/2026/000002')
 
     def test_search_and_decision_filter_are_paginated_after_filtering(self):
-        result = main.results('job-id', offset=1, limit=1, q='t/2026', decision='EXACT_VISUAL_IDENTITY')
+        result = main.results(
+            'job-id',
+            offset=1,
+            limit=1,
+            q='t/2026',
+            decision='EXACT_VISUAL_IDENTITY',
+            request=self.request,
+        )
 
         self.assertEqual(result['total'], 2)
         self.assertEqual(len(result['items']), 1)
@@ -59,8 +72,8 @@ class ResultsSearchTests(unittest.TestCase):
         self.matches[0]['decision'] = 'EXACT_TEXT_MARK_MATCH'
         (self.root / 'job-id' / 'report' / 'matches.json').write_text(json.dumps(self.matches), encoding='utf8')
 
-        result = main.results('job-id', q='wordmark')
-        exact = main.results('job-id', decision='EXACT')
+        result = main.results('job-id', q='wordmark', request=self.request)
+        exact = main.results('job-id', decision='EXACT', request=self.request)
 
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['items'][0]['source_a_text'], 'Example Wordmark')
@@ -74,8 +87,8 @@ class ResultsSearchTests(unittest.TestCase):
         ]
         (report / 'assets_a.json').write_text(json.dumps(assets), encoding='utf8')
 
-        first = main.assets('job-id', 'A')
-        last = main.assets('job-id', 'A', offset=5900)
+        first = main.assets('job-id', 'A', request=self.request)
+        last = main.assets('job-id', 'A', offset=5900, request=self.request)
 
         self.assertEqual(first['total'], 6000)
         self.assertEqual(len(first['items']), 100)

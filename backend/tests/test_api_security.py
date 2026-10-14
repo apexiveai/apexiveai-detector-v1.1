@@ -1,3 +1,4 @@
+import json
 import tempfile
 import time
 import unittest
@@ -21,24 +22,43 @@ class ApiSecurityTests(unittest.TestCase):
         self.data_patch.start()
         self.jobs_patch = patch.dict(main.JOBS, {}, clear=True)
         self.jobs_patch.start()
-        self.key_patch = patch.object(main, "JWT_KEY", "test-only-secret")
-        self.key_patch.start()
+        self.access_patch = patch.object(main, "_fetch_apexive_product_access", side_effect=self.authorize)
+        self.access_mock = self.access_patch.start()
         main._save_job("tenant-job", "tenant-a", {"_tenant_id": "tenant-a", "status": "queued", "progress": 0})
         self.client = TestClient(main.app)
 
     def tearDown(self):
         self.jobs_patch.stop()
-        self.key_patch.stop()
+        self.access_patch.stop()
         self.data_patch.stop()
         self.temp_dir.cleanup()
 
+    def authorize(self, token):
+        try:
+            claims = jwt.decode(token, "test-only-secret-change-to-32-bytes", algorithms=["HS256"])
+        except jwt.PyJWTError:
+            return 401, b"{}"
+        return 200, json.dumps({"has_access": True, "tenant_id": claims["tenant_id"]}).encode("utf8")
+
     def token(self, tenant):
-        return jwt.encode({"tenant_id": tenant, "exp": int(time.time()) + 60}, "test-only-secret", algorithm="HS256")
+        return jwt.encode({"tenant_id": tenant, "exp": int(time.time()) + 60}, "test-only-secret-change-to-32-bytes", algorithm="HS256")
 
     def test_api_requires_bearer_auth_when_verification_key_is_configured(self):
         response = self.client.get("/api/jobs/tenant-job")
 
         self.assertEqual(response.status_code, 401)
+
+    def test_revoked_product_access_is_denied(self):
+        self.access_mock.side_effect = None
+        self.access_mock.return_value = (200, json.dumps({"has_access": False, "tenant_id": "tenant-a"}).encode("utf8"))
+        response = self.client.get("/api/jobs/tenant-job", headers={"Authorization": f"Bearer {self.token('tenant-a')}"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_authorization_service_outage_fails_closed(self):
+        self.access_mock.side_effect = None
+        self.access_mock.return_value = (503, b"{}")
+        response = self.client.get("/api/jobs/tenant-job", headers={"Authorization": f"Bearer {self.token('tenant-a')}"})
+        self.assertEqual(response.status_code, 503)
 
     def test_jobs_are_isolated_by_tenant(self):
         other_tenant = self.client.get(

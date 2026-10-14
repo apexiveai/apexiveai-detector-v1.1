@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -8,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -15,8 +17,10 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.parse import urlsplit
 
-import jwt
 import pymupdf
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,14 +50,20 @@ MAX_WORKSHEET_ROWS = int(os.getenv("MAX_WORKSHEET_ROWS", "250000"))
 MAX_WORKSHEET_COLUMNS = int(os.getenv("MAX_WORKSHEET_COLUMNS", "256"))
 ALLOWED = {".pdf", ".xlsx", ".xlsm"} | STANDALONE_IMAGE_EXTENSIONS
 TERMINAL_STATUSES = {"completed", "error", "cancelled"}
-JWT_KEY = os.getenv("JWT_PUBLIC_KEY") or os.getenv("JWT_SECRET")
-JWT_ALGORITHMS = [value.strip() for value in os.getenv("JWT_ALGORITHMS", "HS256").split(",") if value.strip()]
-
-if os.getenv("APP_ENV", "development").lower() == "production":
-    if not JWT_KEY:
-        raise RuntimeError("JWT_SECRET or JWT_PUBLIC_KEY must be configured in production.")
-    if not os.getenv("JWT_PUBLIC_KEY") and len(os.getenv("JWT_SECRET", "").encode("utf8")) < 32:
-        raise RuntimeError("Production JWT_SECRET must contain at least 32 bytes.")
+APEXIVE_API_URL = os.getenv("APEXIVE_API_URL", "http://127.0.0.1:8099").rstrip("/")
+APEXIVE_AUTH_TIMEOUT = float(os.getenv("APEXIVE_AUTH_TIMEOUT", "5"))
+APEXIVE_AUTH_RECHECK_SECONDS = max(
+    5.0, float(os.getenv("APEXIVE_AUTH_RECHECK_SECONDS", "30"))
+)
+_auth_endpoint = urlsplit(APEXIVE_API_URL)
+if _auth_endpoint.scheme != "https" and _auth_endpoint.hostname not in {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+}:
+    raise RuntimeError("APEXIVE_API_URL must use HTTPS outside local development.")
+if _auth_endpoint.scheme not in {"http", "https"} or not _auth_endpoint.hostname:
+    raise RuntimeError("APEXIVE_API_URL must be an absolute HTTP(S) URL.")
 
 logger = logging.getLogger("apexive.trademark")
 
@@ -88,6 +98,7 @@ JOBS: dict[str, dict[str, Any]] = {}
 _job_lock = threading.RLock()
 _cancel_events: dict[str, threading.Event] = {}
 _futures: dict[str, Future[Any]] = {}
+_job_authorization_tokens: dict[str, str] = {}
 _executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="trademark-job")
 _capacity = threading.BoundedSemaphore(MAX_WORKERS + MAX_QUEUED_JOBS)
 _cleanup_stop = threading.Event()
@@ -165,8 +176,11 @@ def _save_job(job_id: str, tenant_id: str, state: dict[str, Any], event: str | N
 
 def _tenant(request: Request | None) -> str:
     if request is None:
-        return "local-dev"
-    return str(getattr(request.state, "tenant_id", "local-dev"))
+        raise HTTPException(401, "A verified product session is required.")
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(401, "A verified product session is required.")
+    return str(tenant_id)
 
 
 def _owned_job(job_id: str, tenant_id: str) -> dict[str, Any]:
@@ -195,34 +209,157 @@ def _public_state(job_id: str, state: dict[str, Any]) -> dict[str, Any]:
 
 @app.middleware("http")
 async def authenticate_api(request: Request, call_next):
-    if request.url.path.startswith("/api/") and request.method != "OPTIONS":
-        tenant_id = "local-dev"
-        if JWT_KEY:
-            authorization = request.headers.get("authorization", "")
-            scheme, _, token = authorization.partition(" ")
-            if scheme.lower() != "bearer" or not token:
-                return JSONResponse({"detail": "Bearer authentication is required."}, status_code=401)
-            try:
-                options: dict[str, Any] = {"require": ["exp"]}
-                decode_options: dict[str, Any] = {"algorithms": JWT_ALGORITHMS, "options": options}
-                issuer = os.getenv("JWT_ISSUER")
-                audience = os.getenv("JWT_AUDIENCE")
-                if issuer:
-                    decode_options["issuer"] = issuer
-                if audience:
-                    decode_options["audience"] = audience
-                claims = jwt.decode(token, JWT_KEY, **decode_options)
-            except jwt.PyJWTError:
-                return JSONResponse({"detail": "Invalid or expired access token."}, status_code=401)
-            tenant_id = str(claims.get("tenant_id") or claims.get("org_id") or claims.get("sub") or "")
-            if not tenant_id:
-                return JSONResponse({"detail": "The access token has no tenant or subject identifier."}, status_code=403)
+    is_launch_exchange = request.url.path == "/api/auth/exchange" and request.method == "POST"
+    if request.url.path.startswith("/api/") and request.method != "OPTIONS" and not is_launch_exchange:
+        authorization = request.headers.get("authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return JSONResponse(
+                {"detail": "Bearer authentication is required."},
+                status_code=401,
+            )
+        try:
+            access_status, access_body = await asyncio.to_thread(
+                _fetch_apexive_product_access,
+                token,
+            )
+        except (OSError, TimeoutError, URLError):
+            logger.exception("Apexive product authorization service is unavailable")
+            return JSONResponse(
+                {"detail": "Product authorization service is unavailable."},
+                status_code=503,
+            )
+        if access_status == 401:
+            return JSONResponse(
+                {"detail": "Invalid or expired Apexive account session."},
+                status_code=401,
+            )
+        if access_status != 200:
+            if access_status >= 500:
+                return JSONResponse(
+                    {"detail": "Product authorization service is unavailable."},
+                    status_code=503,
+                )
+            return JSONResponse(
+                {"detail": "This account is not authorized to use Trademark Conflict."},
+                status_code=403,
+            )
+        try:
+            access_data = json.loads(access_body)
+            tenant_id = str(access_data.get("tenant_id") or "")
+        except (json.JSONDecodeError, AttributeError):
+            logger.error("Apexive product authorization returned an invalid response")
+            return JSONResponse(
+                {"detail": "Product authorization service returned an invalid response."},
+                status_code=502,
+            )
+        if access_data.get("has_access") is not True or not tenant_id:
+            return JSONResponse(
+                {"detail": "This account is not authorized to use Trademark Conflict."},
+                status_code=403,
+            )
         request.state.tenant_id = tenant_id
+        request.state.authorization_token = token
+        if request.method == "POST" and request.url.path == "/api/analyze":
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_UPLOAD_BYTES + 64 * 1024:
+                        return JSONResponse(
+                            {"detail": "Upload request exceeds the configured size limit."},
+                            status_code=413,
+                        )
+                except ValueError:
+                    return JSONResponse(
+                        {"detail": "Invalid content length."},
+                        status_code=400,
+                    )
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     if request.url.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "private, no-store")
     return response
+
+
+@app.post("/api/auth/exchange")
+async def exchange_launch_code(request: Request):
+    try:
+        payload = await request.json()
+        code = payload.get("code") if isinstance(payload, dict) else None
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(400, "A product launch code is required.") from None
+    if not isinstance(code, str) or not code.strip() or len(code) > 256:
+        raise HTTPException(400, "A product launch code is required.")
+
+    exchange_request = UrlRequest(
+        f"{APEXIVE_API_URL}/api/subscriptions/launch/exchange",
+        data=json.dumps({"code": code}).encode("utf8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(exchange_request, timeout=APEXIVE_AUTH_TIMEOUT) as response:
+            status_code, response_body = response.status, response.read()
+    except HTTPError as response:
+        status_code, response_body = response.code, response.read()
+    except (OSError, TimeoutError, URLError):
+        logger.exception("Apexive launch-code exchange service is unavailable")
+        raise HTTPException(503, "Product authorization service is unavailable.") from None
+
+    try:
+        result = json.loads(response_body)
+    except json.JSONDecodeError:
+        logger.error("Apexive launch-code exchange returned an invalid response")
+        raise HTTPException(502, "Product authorization service returned an invalid response.") from None
+    if status_code != 200:
+        detail = result.get("detail") if isinstance(result, dict) else None
+        if status_code >= 500:
+            raise HTTPException(503, "Product authorization service is unavailable.")
+        raise HTTPException(status_code, detail or "Product launch link is invalid or expired.")
+    if not isinstance(result, dict) or result.get("product_key") != "trademark" or not result.get("access_token"):
+        logger.error("Apexive launch-code exchange returned an invalid product session")
+        raise HTTPException(502, "Product authorization service returned an invalid session.")
+    return result
+
+
+@app.get("/api/auth/session")
+def current_product_session(request: Request):
+    return {"tenant_id": request.state.tenant_id, "product_key": "trademark"}
+
+
+def _fetch_apexive_product_access(token: str) -> tuple[int, bytes]:
+    authorization_request = UrlRequest(
+        f"{APEXIVE_API_URL}/api/subscriptions/access/trademark",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urlopen(authorization_request, timeout=APEXIVE_AUTH_TIMEOUT) as response:
+            return response.status, response.read()
+    except HTTPError as response:
+        return response.code, response.read()
+
+
+class ProductAuthorizationError(Exception):
+    pass
+
+
+def _verify_deferred_job_access(token: str, tenant_id: str) -> None:
+    try:
+        response_status, response_body = _fetch_apexive_product_access(token)
+        access_data = json.loads(response_body)
+    except (OSError, TimeoutError, URLError, json.JSONDecodeError) as exc:
+        raise ProductAuthorizationError(
+            "Product authorization could not be rechecked; retry after service recovery."
+        ) from exc
+    if (
+        response_status != 200
+        or not isinstance(access_data, dict)
+        or access_data.get("has_access") is not True
+        or str(access_data.get("tenant_id") or "") != tenant_id
+    ):
+        raise ProductAuthorizationError(
+            "Product access is no longer active; the job was not processed."
+        )
 
 
 def _safe_filename(name: str | None) -> str:
@@ -309,25 +446,45 @@ class JobCancelled(Exception):
     pass
 
 
-def _enqueue(job_id: str, tenant_id: str) -> None:
+def _enqueue(job_id: str, tenant_id: str, authorization_token: str) -> None:
     event = threading.Event()
     with _job_lock:
         _cancel_events[job_id] = event
-        _futures[job_id] = _executor.submit(_run_job, job_id, tenant_id, event)
+        _job_authorization_tokens[job_id] = authorization_token
+        try:
+            _futures[job_id] = _executor.submit(
+                _run_job, job_id, tenant_id, event, authorization_token
+            )
+        except Exception:
+            _job_authorization_tokens.pop(job_id, None)
+            _cancel_events.pop(job_id, None)
+            raise
 
 
-def _run_job(job_id: str, tenant_id: str, cancel_event: threading.Event) -> None:
+def _run_job(
+    job_id: str,
+    tenant_id: str,
+    cancel_event: threading.Event,
+    authorization_token: str,
+) -> None:
     directory = _job_dir(job_id)
     try:
+        _verify_deferred_job_access(authorization_token, tenant_id)
         state = _owned_job(job_id, tenant_id)
         if cancel_event.is_set():
             state.update(status="cancelled", progress=0, message="Cancelled before processing.")
             _save_job(job_id, tenant_id, state, "cancelled")
             return
 
+        last_authorization_check = time.monotonic()
+
         def update(progress: int, message: str) -> None:
+            nonlocal last_authorization_check
             if cancel_event.is_set():
                 raise JobCancelled()
+            if time.monotonic() - last_authorization_check >= APEXIVE_AUTH_RECHECK_SECONDS:
+                _verify_deferred_job_access(authorization_token, tenant_id)
+                last_authorization_check = time.monotonic()
             current = _owned_job(job_id, tenant_id)
             current.update(status="running", progress=max(0, min(99, int(progress))), message=message)
             _save_job(job_id, tenant_id, current)
@@ -345,6 +502,10 @@ def _run_job(job_id: str, tenant_id: str, cancel_event: threading.Event) -> None
         state = _owned_job(job_id, tenant_id)
         state.update(status="cancelled", message="Analysis cancelled.", progress=state.get("progress", 0))
         _save_job(job_id, tenant_id, state, "cancelled")
+    except ProductAuthorizationError as exc:
+        state = _owned_job(job_id, tenant_id)
+        state.update(status="error", progress=100, message=str(exc))
+        _save_job(job_id, tenant_id, state, "authorization_rejected")
     except Exception as exc:
         logger.exception("Analysis job %s failed", job_id)
         try:
@@ -357,6 +518,7 @@ def _run_job(job_id: str, tenant_id: str, cancel_event: threading.Event) -> None
         with _job_lock:
             _cancel_events.pop(job_id, None)
             _futures.pop(job_id, None)
+            _job_authorization_tokens.pop(job_id, None)
         _capacity.release()
 
 
@@ -480,7 +642,7 @@ async def analyze(
             "attempts": 1,
         }
         _save_job(job_id, tenant_id, state, "created")
-        _enqueue(job_id, tenant_id)
+        _enqueue(job_id, tenant_id, request.state.authorization_token)
         return {"job_id": job_id, "status": "queued"}
     except Exception:
         _capacity.release()
@@ -513,7 +675,7 @@ def retry_job(jid: str, request: Request = None):
         raise HTTPException(429, "Analysis queue is full. Retry when a worker is available.")
     state.update(status="queued", progress=0, message="Retry queued", attempts=int(state.get("attempts", 1)) + 1)
     _save_job(jid, tenant_id, state, "retry_queued")
-    _enqueue(jid, tenant_id)
+    _enqueue(jid, tenant_id, request.state.authorization_token)
     return {"job_id": jid, "status": "queued", "attempts": state["attempts"]}
 
 
@@ -533,6 +695,7 @@ def cancel_job(jid: str, request: Request = None):
             _save_job(jid, tenant_id, state, "cancelled")
             _cancel_events.pop(jid, None)
             _futures.pop(jid, None)
+            _job_authorization_tokens.pop(jid, None)
             _capacity.release()
         else:
             state.update(status="cancelling", message="Cancellation requested.")
