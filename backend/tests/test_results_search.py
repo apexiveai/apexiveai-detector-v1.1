@@ -24,11 +24,12 @@ class ResultsSearchTests(unittest.TestCase):
                 'source_a_file': 'government.pdf',
                 'source_b_file': 'records.xlsx',
                 'decision': decision,
+                'application_number_status': application_status,
             }
-            for index, application_a, application_b, decision in (
-                (1, 'T/2026/000001', '', 'EXACT_VISUAL_IDENTITY'),
-                (2, '', 'T/2026/000002', 'HIGH_VISUAL_SIMILARITY'),
-                (3, 'T/2026/000003', 'T/2026/000003', 'EXACT_VISUAL_IDENTITY'),
+            for index, application_a, application_b, decision, application_status in (
+                (1, 'T/2026/000001', '', 'EXACT_VISUAL_IDENTITY', 'mismatch'),
+                (2, '', 'T/2026/000002', 'HIGH_VISUAL_SIMILARITY', 'missing'),
+                (3, 'T/2026/000003', 'T/2026/000003', 'EXACT_VISUAL_IDENTITY', 'exact'),
             )
         ]
         (report / 'matches.json').write_text(json.dumps(self.matches), encoding='utf8')
@@ -67,7 +68,7 @@ class ResultsSearchTests(unittest.TestCase):
         self.assertEqual(len(result['items']), 1)
         self.assertEqual(result['items'][0]['match_id'], 'M-3')
 
-    def test_search_can_find_text_only_mark_matches(self):
+    def test_search_can_find_legacy_text_mark_results_without_treating_them_as_logo_matches(self):
         self.matches[0]['source_a_text'] = 'Example Wordmark'
         self.matches[0]['decision'] = 'EXACT_TEXT_MARK_MATCH'
         (self.root / 'job-id' / 'report' / 'matches.json').write_text(json.dumps(self.matches), encoding='utf8')
@@ -77,7 +78,34 @@ class ResultsSearchTests(unittest.TestCase):
 
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['items'][0]['source_a_text'], 'Example Wordmark')
-        self.assertEqual(exact['total'], 2)
+        self.assertEqual(exact['total'], 1)
+
+    def test_application_number_status_filter_is_independent_of_visual_decision(self):
+        result = main.results(
+            'job-id',
+            decision='HIGH_VISUAL_SIMILARITY',
+            application_status='missing',
+            request=self.request,
+        )
+
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['items'][0]['match_id'], 'M-2')
+
+    def test_jsonl_results_are_paged_and_filtered_without_materializing_all_matches(self):
+        report = self.root / 'job-id' / 'report'
+        (report / 'matches.jsonl').write_text(
+            '\n'.join(json.dumps(match) for match in self.matches) + '\n',
+            encoding='utf8',
+        )
+        (report / 'summary.json').write_text(json.dumps({'matched': len(self.matches)}), encoding='utf8')
+
+        page = main.results('job-id', offset=1, limit=1, request=self.request)
+        filtered = main.results('job-id', application_status='mismatch', request=self.request)
+
+        self.assertEqual(page['total'], 3)
+        self.assertEqual([item['match_id'] for item in page['items']], ['M-2'])
+        self.assertEqual(filtered['total'], 1)
+        self.assertEqual(filtered['items'][0]['match_id'], 'M-1')
 
     def test_extracted_mark_inventory_pages_all_six_thousand_assets(self):
         report = self.root / 'job-id' / 'report'

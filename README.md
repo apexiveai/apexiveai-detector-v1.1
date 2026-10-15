@@ -1,13 +1,15 @@
 # Apexive AI Trademark Conflict Detector
 
-Trademark mark records extracted from PDFs, Excel workbooks, and standalone raster logo files are normalized into a common asset record and compared by the same visual/text matching pipeline.
+Trademark records extracted from PDFs, Excel workbooks, standalone SVG files, and raster logo files are normalized into a common asset record. Logo images are compared independently of application numbers.
 
 ## Supported input and evidence
 
 - PDF ↔ PDF, XLSX/XLSM ↔ XLSX/XLSM, PDF ↔ Excel, and supported logo image ↔ any supported source.
 - PDF extraction targets the `(540)` mark field. Pages without a text layer use Tesseract OCR to locate that field and capture a page-bounded evidence crop.
 - Excel extraction checks all worksheets for image anchors and text in a `Mark` or equivalent mark/logo/device column.
-- Standalone logo inputs: PNG, JPEG, BMP, WEBP, TIFF, and GIF (first frame).
+- Standalone logo inputs: SVG, PNG, JPEG, BMP, WEBP, TIFF, and GIF (first frame). SVG scripts, external resources, DTDs, and entities are rejected before rendering.
+- All possible image-logo pairs are fingerprint-screened, with progress reporting; only exact or threshold-qualified visual matches are retained. Application-number pairs are summarized separately as exact, normalized, mismatched, or missing.
+- Similarity evidence separates shape, color, and layout into three visual indicators. Qualified matches can be paginated and exported to CSV or Excel.
 - Reports retain page, sheet, row, column, and an A1-style `source_reference` where the source provides that coordinate. Each source's extracted-mark inventory is available independently of the match list.
 - Application-number equality is metadata only. Exact and similarity scores are technical evidence, not a legal determination; human review is required.
 

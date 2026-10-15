@@ -309,6 +309,7 @@ main { width: min(1280px, 90vw); margin: 0 auto; padding: 66px 0 78px; }
 .error { margin-top: 12px; }
 
 .stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin: 35px 0; }
+.applicationSummary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: -20px 0 35px; }
 .stat {
   min-width: 0;
   padding: 17px;
@@ -393,15 +394,19 @@ main { width: min(1280px, 90vw); margin: 0 auto; padding: 66px 0 78px; }
 .linkLine div { color: #54ddeb; font-size: 29px; }
 .linkLine strong { color: #f0f9fa; font: 700 18px 'Space Mono', monospace; font-variant-caps: all-small-caps; }
 .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
-.meta > div, .metric, .sift { padding: 9px; border: 1px solid #1b303d; border-radius: 9px; background: #08121b; }
-.meta span, .metric span, .sift span { color: #78909e; font: 8px 'Space Mono', monospace; font-variant-caps: all-small-caps; }
+.meta > div { padding: 9px; border: 1px solid #1b303d; border-radius: 9px; background: #08121b; }
+.meta span { color: #78909e; font: 8px 'Space Mono', monospace; font-variant-caps: all-small-caps; }
 .meta span { display: block; text-transform: uppercase; letter-spacing: .08em; }
 .meta b { display: block; overflow: hidden; margin-top: 5px; color: #c7d7de; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.metrics { display: grid; grid-template-columns: repeat(6, 1fr) 95px; gap: 8px; margin-top: 10px; }
-.metric b, .sift b { float: right; color: #c6d8df; font: 9px 'Space Mono', monospace; font-variant-caps: all-small-caps; }
-.bar { height: 3px; clear: both; margin-top: 9px; border-radius: 5px; background: #1b2c37; }
-.bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #149fc5, #58e5eb); }
-.sift b { color: #56deea; font-size: 13px; }
+.applicationStatus { text-transform: uppercase; }
+.applicationStatus.exact { color: #7ee1b2; }
+.applicationStatus.normalized { color: #63ddeb; }
+.applicationStatus.mismatch { color: #ffb359; }
+.applicationStatus.missing { color: #8297a5; }
+.evidenceCircles { display: grid; grid-template-columns: repeat(3, 88px); justify-content: center; gap: 22px; margin: 18px auto 3px; }
+.evidenceCircle { display: flex; width: 88px; height: 88px; flex-direction: column; align-items: center; justify-content: center; gap: 5px; border: 1px solid #55dce577; border-radius: 50%; background: radial-gradient(circle, #143442, #07141e 72%); box-shadow: 0 0 18px #28c9dc16, inset 0 0 14px #30d6e819; text-align: center; }
+.evidenceCircle strong { color: #e4f7fa; font: 700 17px 'Space Mono', monospace; }
+.evidenceCircle span { color: #83a7b2; font: 8px 'Space Mono', monospace; letter-spacing: .08em; }
 .pager { display: flex; justify-content: center; align-items: center; gap: 17px; margin: 22px 0; color: #8295a0; font: 9px 'Space Mono', monospace; font-variant-caps: all-small-caps; }
 .pager button { padding: 9px 12px; border: 1px solid #294353; border-radius: 8px; color: #c3d2da; background: #0a1620; cursor: pointer; }
 .pager button:disabled { opacity: .38; cursor: not-allowed; }
@@ -420,7 +425,7 @@ footer {
 @media (max-width: 1000px) {
   .heroJustice { width: 29vw; min-width: 245px; }
   .stats { grid-template-columns: repeat(3, 1fr); }
-  .metrics { grid-template-columns: repeat(3, 1fr); }
+  .applicationSummary { grid-template-columns: repeat(3, 1fr); }
   .resultsHead { align-items: flex-start; flex-direction: column; }
   .tools { justify-content: flex-start; }
   .assetGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -442,6 +447,7 @@ footer {
   .versus svg { transform: rotate(90deg); }
   .action { flex-wrap: wrap; }
   .stats { grid-template-columns: repeat(2, 1fr); }
+  .applicationSummary { grid-template-columns: repeat(2, 1fr); }
   .resultsHead h2 { font-size: 27px; }
   .tools { width: 100%; }
   .search { flex: 1 1 100%; }
@@ -451,7 +457,8 @@ footer {
   .linkLine { display: flex; align-items: center; justify-content: center; gap: 10px; }
   .linkLine div { transform: rotate(90deg); }
   .meta { grid-template-columns: 1fr; }
-  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .evidenceCircles { grid-template-columns: repeat(3, 76px); gap: 10px; }
+  .evidenceCircle { width: 76px; height: 76px; }
   .assetGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   footer { flex-direction: column; align-items: center; text-align: center; }
 }

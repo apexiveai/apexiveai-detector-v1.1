@@ -5,20 +5,30 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pymupdf
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as SpreadsheetImage
 from PIL import Image, ImageDraw
 
 from app.engine import (
+    application_number_status,
+    application_pair_counts,
+    app_raw_metadata,
     cv,
     extract,
+    image_application_metadata,
+    match_report_row,
     pdf_assets,
     prepare_verification,
     run,
+    sanitize_svg,
+    svg_assets,
     verify,
     verify_prepared,
     xlsx_assets,
 )
+
+def read_match_records(path):
+    return [json.loads(line) for line in path.read_text(encoding='utf8').splitlines() if line.strip()]
 
 
 class MarkAssetExtractionTests(unittest.TestCase):
@@ -75,6 +85,27 @@ class MarkAssetExtractionTests(unittest.TestCase):
             'T/2026/001111',
             'T/2026/002222',
         ])
+
+    def test_pdf_extracts_labeled_numeric_application_number(self):
+        pdf_path = self.root / 'numeric_application.pdf'
+        doc = pymupdf.open()
+        page = doc.new_page(width=300, height=300)
+        page.insert_text((20, 24), 'Application No.: 6000')
+        page.insert_text((20, 40), '(540)')
+        page.insert_image(pymupdf.Rect(120, 50, 200, 100), stream=self.image_bytes)
+        doc.save(pdf_path)
+        doc.close()
+
+        assets = pdf_assets(pdf_path, self.root, lambda *_: None)
+
+        self.assertEqual(assets[0]['application_raw'], '6000')
+        self.assertEqual(assets[0]['application_no'], '6000')
+
+    def test_image_ocr_extracts_labeled_numeric_application_number(self):
+        with patch('pytesseract.image_to_string', return_value='Application No.: 6000'):
+            raw, normalized, error = image_application_metadata(cv(self.image_path))
+
+        self.assertEqual((raw, normalized, error), ('6000', '6000', ''))
 
     def test_pdf_extracts_text_only_marks_from_the_540_field(self):
         pdf_path = self.root / 'text_mark.pdf'
@@ -245,7 +276,7 @@ class MarkAssetExtractionTests(unittest.TestCase):
         )):
             job_dir = self.root / f'job-{index}'
             summary = run(job_dir, source_a, source_b, lambda *_: None)
-            matches = json.loads((job_dir / 'report' / 'matches.json').read_text())
+            matches = read_match_records(job_dir / 'report' / 'matches.jsonl')
 
             self.assertEqual(summary['matched'], 1)
             self.assertEqual(matches[0]['source_a_field'], field_a)
@@ -264,7 +295,7 @@ class MarkAssetExtractionTests(unittest.TestCase):
 
         job_dir = self.root / 'pdf-pdf-job'
         summary = run(job_dir, pdf_paths[0], pdf_paths[1], lambda *_: None)
-        matches = json.loads((job_dir / 'report' / 'matches.json').read_text())
+        matches = read_match_records(job_dir / 'report' / 'matches.jsonl')
         assets_a = json.loads((job_dir / 'report' / 'assets_a.json').read_text())
         assets_b = json.loads((job_dir / 'report' / 'assets_b.json').read_text())
 
@@ -295,14 +326,12 @@ class MarkAssetExtractionTests(unittest.TestCase):
 
         job_dir = self.root / 'text-job'
         summary = run(job_dir, pdf_path, xlsx_path, lambda *_: None)
-        matches = json.loads((job_dir / 'report' / 'matches.json').read_text())
+        matches = read_match_records(job_dir / 'report' / 'matches.jsonl')
 
-        self.assertEqual(summary['matched'], 1)
-        self.assertEqual(matches[0]['decision'], 'EXACT_TEXT_MARK_MATCH')
-        self.assertEqual(matches[0]['source_a_text'], 'Example Wordmark')
-        self.assertEqual(matches[0]['source_a_reference'], 'page 1')
-        self.assertEqual(matches[0]['source_b_reference'], 'Sheet!B2')
-        self.assertIsNone(matches[0]['asset_b_url'])
+        self.assertEqual(summary['matched'], 0)
+        self.assertEqual(summary['exact_text_matches'], 0)
+        self.assertEqual(summary['pairs_checked'], 0)
+        self.assertEqual(matches, [])
 
 
     def test_standalone_logos_share_normalized_records_and_comparison(self):
@@ -315,7 +344,7 @@ class MarkAssetExtractionTests(unittest.TestCase):
 
         records = extract(source_a, 'A', assets_dir, lambda *_: None)
         summary = run(self.root / 'job', source_a, source_b, lambda *_: None)
-        matches = json.loads((self.root / 'job' / 'report' / 'matches.json').read_text(encoding='utf8'))
+        matches = read_match_records(self.root / 'job' / 'report' / 'matches.jsonl')
 
         self.assertEqual(records[0]['source_type'], 'image')
         self.assertEqual(records[0]['source_reference'], 'Standalone logo')
@@ -324,6 +353,16 @@ class MarkAssetExtractionTests(unittest.TestCase):
         self.assertEqual(summary['matched'], 1)
         self.assertEqual(matches[0]['decision'], 'EXACT_VISUAL_IDENTITY')
         self.assertEqual(matches[0]['source_a_reference'], 'Standalone logo')
+        self.assertTrue((self.root / 'job' / 'report' / 'matches.jsonl').is_file())
+        self.assertTrue((self.root / 'job' / 'report' / 'matches.csv').is_file())
+        workbook = load_workbook(self.root / 'job' / 'report' / 'matches.xlsx', read_only=True)
+        try:
+            rows = list(workbook['Matches'].values)
+        finally:
+            workbook.close()
+        self.assertEqual(len(rows), 2)
+        self.assertIn('application_number_status', rows[0])
+        self.assertEqual(rows[1][rows[0].index('application_number_status')], 'missing')
 
     def test_unrelated_standalone_marks_do_not_create_a_match(self):
         source_a = self.root / 'round-logo.png'
@@ -336,6 +375,78 @@ class MarkAssetExtractionTests(unittest.TestCase):
         summary = run(self.root / 'unrelated-job', source_a, source_b, lambda *_: None)
 
         self.assertEqual(summary['matched'], 0)
+        self.assertEqual(summary['pairs_checked'], 1)
+
+    def test_application_number_statuses_distinguish_exact_normalized_and_mismatch(self):
+        self.assertEqual(
+            application_number_status({'application_raw': '6000'}, {'application_raw': '6000'}),
+            'exact',
+        )
+        self.assertEqual(
+            application_number_status(
+                {'application_raw': 't/2026/000001'},
+                {'application_raw': 'T/2026/000001'},
+            ),
+            'normalized',
+        )
+        self.assertEqual(
+            application_number_status({'application_raw': '6000'}, {'application_raw': '6001'}),
+            'mismatch',
+        )
+        self.assertEqual(app_raw_metadata('Application No.: 6000'), '6000')
+
+    def test_application_number_counts_cover_all_pairs_and_missing_values(self):
+        assets_a = [
+            {'application_raw': '6000'},
+            {'application_raw': 'T/2026/000001'},
+            {'application_raw': 't/2026/000002'},
+            {'application_raw': ''},
+        ]
+        assets_b = [
+            {'application_raw': '6000'},
+            {'application_raw': 'T/2026/000001'},
+            {'application_raw': 'T/2026/000002'},
+            {'application_raw': 'T/2026/000003'},
+            {'application_raw': ''},
+        ]
+
+        self.assertEqual(application_pair_counts(assets_a, assets_b), {
+            'exact': 2,
+            'normalized': 1,
+            'mismatch': 9,
+            'missing': 8,
+            'pairs_checked': 20,
+        })
+
+    def test_spreadsheet_exports_escape_formula_like_source_values(self):
+        row = match_report_row({'application_raw_a': ' =HYPERLINK("https://example.com")'})
+
+        self.assertEqual(row['application_raw_a'], '\' =HYPERLINK("https://example.com")')
+
+    def test_svg_extraction_uses_safe_text_metadata_and_renders_logo(self):
+        svg_path = self.root / 'logo.svg'
+        svg_path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" aria-label="T/2026/001234">'
+            '<title>Sample logo</title><rect width="40" height="30" fill="black"/>'
+            '</svg>',
+            encoding='utf8',
+        )
+
+        with patch('app.engine.render_vector_bytes', return_value=cv(self.image_path)):
+            assets = svg_assets(svg_path, self.root)
+
+        self.assertEqual(assets[0]['application_raw'], 'T/2026/001234')
+        self.assertEqual(assets[0]['application_no'], 'T/2026/001234')
+        self.assertEqual(assets[0]['source_type'], 'svg')
+        self.assertEqual(assets[0]['mark_content_type'], 'image')
+        self.assertTrue((self.root / assets[0]['image_file']).is_file())
+
+    def test_svg_rejects_external_resources(self):
+        with self.assertRaisesRegex(ValueError, 'external image or resource'):
+            sanitize_svg(
+                b'<svg xmlns="http://www.w3.org/2000/svg">'
+                b'<image href="https://example.com/logo.png"/></svg>'
+            )
 
     def test_duplicate_marks_remain_distinct_inventory_records(self):
         source_a = self.root / 'duplicates-a.xlsx'
@@ -353,11 +464,20 @@ class MarkAssetExtractionTests(unittest.TestCase):
         job_dir = self.root / 'duplicates-job'
         summary = run(job_dir, source_a, source_b, lambda *_: None)
         assets_a = json.loads((job_dir / 'report' / 'assets_a.json').read_text(encoding='utf8'))
-        matches = json.loads((job_dir / 'report' / 'matches.json').read_text(encoding='utf8'))
+        matches = read_match_records(job_dir / 'report' / 'matches.jsonl')
 
         self.assertEqual(len(assets_a), 2)
         self.assertEqual(len({asset['asset_id'] for asset in assets_a}), 2)
         self.assertEqual(summary['matched'], 2)
+        self.assertEqual(summary['pairs_checked'], 2)
+        self.assertEqual(summary['application_number_status_counts'], {
+            'exact': 1,
+            'normalized': 0,
+            'mismatch': 1,
+            'missing': 0,
+            'pairs_checked': 2,
+        })
+        self.assertEqual([match['application_number_status'] for match in matches], ['exact', 'mismatch'])
         self.assertTrue(all(match['source_b_reference'] == 'Sheet!B2' for match in matches))
 
 

@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 from starlette.background import BackgroundTask
 
-from .engine import STANDALONE_IMAGE_EXTENSIONS, run
+from .engine import STANDALONE_IMAGE_EXTENSIONS, run, sanitize_svg
 
 BASE = Path(__file__).resolve().parent.parent
 DATA = Path(os.getenv("DATA_DIR", str(BASE / "data"))).resolve()
@@ -49,7 +49,7 @@ MAX_JOB_ATTEMPTS = max(1, int(os.getenv("MAX_JOB_ATTEMPTS", "3")))
 MAX_ASSETS_PER_SOURCE = int(os.getenv("MAX_ASSETS_PER_SOURCE", "6000"))
 MAX_WORKSHEET_ROWS = int(os.getenv("MAX_WORKSHEET_ROWS", "250000"))
 MAX_WORKSHEET_COLUMNS = int(os.getenv("MAX_WORKSHEET_COLUMNS", "256"))
-ALLOWED = {".pdf", ".xlsx", ".xlsm"} | STANDALONE_IMAGE_EXTENSIONS
+ALLOWED = {".pdf", ".xlsx", ".xlsm", ".svg"} | STANDALONE_IMAGE_EXTENSIONS
 TERMINAL_STATUSES = {"completed", "error", "cancelled"}
 APEXIVE_API_URL = os.getenv("APEXIVE_API_URL", "http://127.0.0.1:8099").rstrip("/")
 APEXIVE_AUTH_TIMEOUT = float(os.getenv("APEXIVE_AUTH_TIMEOUT", "5"))
@@ -374,7 +374,7 @@ async def _save_upload(upload: UploadFile, target: Path, total_so_far: int) -> i
     filename = _safe_filename(upload.filename)
     extension = Path(filename).suffix.lower()
     if extension not in ALLOWED:
-        raise HTTPException(400, "Each source must be PDF, XLSX, XLSM, or a supported raster logo image.")
+        raise HTTPException(400, "Each source must be PDF, XLSX, XLSM, SVG, or a supported raster logo image.")
     size = 0
     with target.open("wb") as destination:
         while chunk := await upload.read(1024 * 1024):
@@ -418,6 +418,9 @@ def _validate_file(path: Path, extension: str) -> None:
                     )
         finally:
             document.close()
+        return
+    if extension == ".svg":
+        sanitize_svg(path.read_bytes())
         return
     if extension in {".xlsx", ".xlsm"}:
         with zipfile.ZipFile(path) as archive:
@@ -711,30 +714,71 @@ def results(
     limit: int = 100,
     q: str = "",
     decision: str = "",
+    application_status: str = "",
     request: Request = None,
 ):
     state = _owned_job(jid, _tenant(request))
     if state.get("status") != "completed":
         raise HTTPException(409, "Results are available after the job completes.")
-    path = _job_dir(jid) / "report" / "matches.json"
+    report = _job_dir(jid) / "report"
+    jsonl_path = report / "matches.jsonl"
+    legacy_path = report / "matches.json"
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
-    if not path.exists():
+    if application_status and application_status not in {"exact", "normalized", "mismatch", "missing"}:
+        raise HTTPException(400, "Invalid application-number status.")
+    if not jsonl_path.exists() and not legacy_path.exists():
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
-    items = json.loads(path.read_text(encoding="utf8"))
     query = q.strip().casefold()
-    if query:
-        searchable_fields = (
-            "match_id", "source_a_asset_id", "source_b_asset_id", "source_a_file", "source_b_file",
-            "source_a_sheet", "source_b_sheet", "source_a_text", "source_b_text", "application_a", "application_b",
-        )
-        items = [item for item in items if any(query in str(item.get(field) or "").casefold() for field in searchable_fields)]
-    if decision:
-        if decision == "EXACT":
-            items = [item for item in items if item.get("decision") in {"EXACT_VISUAL_IDENTITY", "EXACT_TEXT_MARK_MATCH"}]
-        else:
-            items = [item for item in items if item.get("decision") == decision]
-    return {"items": items[offset : offset + limit], "total": len(items), "offset": offset, "limit": limit}
+    searchable_fields = (
+        "match_id", "source_a_asset_id", "source_b_asset_id", "source_a_file", "source_b_file",
+        "source_a_sheet", "source_b_sheet", "source_a_text", "source_b_text", "application_a", "application_b",
+        "application_raw_a", "application_raw_b",
+    )
+
+    def included(item: dict[str, Any]) -> bool:
+        if query and not any(query in str(item.get(field) or "").casefold() for field in searchable_fields):
+            return False
+        if decision:
+            expected = "EXACT_VISUAL_IDENTITY" if decision == "EXACT" else decision
+            if item.get("decision") != expected:
+                return False
+        return not application_status or item.get("application_number_status", "missing") == application_status
+
+    items: list[dict[str, Any]] = []
+    total = 0
+    if jsonl_path.exists():
+        unfiltered = not query and not decision and not application_status
+        summary_path = report / "summary.json"
+        summary_count = None
+        if unfiltered and summary_path.exists():
+            summary_count = json.loads(summary_path.read_text(encoding="utf8")).get("matched")
+        if isinstance(summary_count, int) and summary_count >= 0:
+            total = summary_count
+        with jsonl_path.open(encoding="utf8") as matches_file:
+            for index, line in enumerate(matches_file):
+                if not line.strip():
+                    continue
+                if unfiltered and isinstance(summary_count, int):
+                    if index >= offset + limit:
+                        break
+                    if index < offset:
+                        continue
+                    items.append(json.loads(line))
+                else:
+                    item = json.loads(line)
+                    if included(item):
+                        if offset <= total < offset + limit:
+                            items.append(item)
+                        total += 1
+    else:
+        matches = json.loads(legacy_path.read_text(encoding="utf8"))
+        for item in matches:
+            if included(item):
+                if offset <= total < offset + limit:
+                    items.append(item)
+                total += 1
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 @app.get("/api/jobs/{jid}/assets/{side}")

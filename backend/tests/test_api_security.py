@@ -88,6 +88,24 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertIn("signature", response.json()["detail"].lower())
         self.assertFalse(any(path.is_dir() for path in self.root.iterdir()))
 
+    def test_svg_upload_rejects_external_resources_without_creating_a_job(self):
+        svg = (
+            b'<svg xmlns="http://www.w3.org/2000/svg">'
+            b'<image href="https://example.com/logo.png"/></svg>'
+        )
+        response = self.client.post(
+            "/api/analyze",
+            headers={"Authorization": "Bearer " + self.token("tenant-a")},
+            files={
+                "file_a": ("logo.svg", svg, "image/svg+xml"),
+                "file_b": ("logo-b.svg", svg, "image/svg+xml"),
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("external", response.json()["detail"].lower())
+        self.assertFalse(any(path.is_dir() for path in self.root.iterdir()))
+
     def test_oversized_upload_is_rejected_and_cleaned_up(self):
         with patch.object(main, "MAX_FILE_BYTES", 4):
             response = self.client.post(
