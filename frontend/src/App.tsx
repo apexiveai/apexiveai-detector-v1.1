@@ -78,6 +78,44 @@ function App() {
     { label: "Evidence rows", value: job?.match_rows ?? "—", icon: ShieldCheck },
   ], [job]);
 
+  // Assets viewer state
+  const [assets, setAssets] = useState<Array<any>>([]);
+  const [assetsSide, setAssetsSide] = useState<"A" | "B" | null>(null);
+  const [assetsLoading, setAssetsLoading] = useState(false);
+  const [assetsVisible, setAssetsVisible] = useState(false);
+
+  async function loadAllAssets(side: "A" | "B") {
+    if (!job?.job_id) return;
+    setAssets([]);
+    setAssetsSide(side);
+    setAssetsLoading(true);
+    setAssetsVisible(true);
+    try {
+      const limit = 500; // backend caps to 500 per request; fetch pages until we have them all
+      let offset = 0;
+      let total = 0;
+      const collected: any[] = [];
+      do {
+        const r = await fetch(`${API_URL}/api/jobs/${job.job_id}/assets/${side}?offset=${offset}&limit=${limit}`);
+        if (!r.ok) throw new Error(`Failed to fetch assets (${r.status})`);
+        const data = await r.json();
+        total = data.total || 0;
+        collected.push(...(data.items || []));
+        offset += (data.limit || limit);
+        // Small delay to avoid flooding in low-bandwidth environments
+        await sleep(60);
+      } while (collected.length < total);
+      // ensure each asset has asset_url prefixed (server provides relative path)
+      setAssets(collected);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setAssets([]);
+      setAssetsVisible(false);
+    } finally {
+      setAssetsLoading(false);
+    }
+  }
+
   function acceptFile(file: File, source: "source-a" | "source-b") {
     if (!/\.(pdf|xlsx|xlsm)$/i.test(file.name)) {
       setError("Choose a PDF, XLSX, or XLSM file.");
@@ -327,20 +365,81 @@ function App() {
               </div>
 
               {completed && (
-                <div className="download-grid">
-                  {(job.files || []).map((name) => (
-                    <a className="download-card" key={name} href={fileUrl(name)} target="_blank" rel="noreferrer">
-                      <Download size={17} />
-                      <span>{name}</span>
-                      <ChevronRight size={16} />
-                    </a>
-                  ))}
-                </div>
+                <>
+                  <div className="download-grid">
+                    {(job.files || []).map((name) => (
+                      <a className="download-card" key={name} href={fileUrl(name)} target="_blank" rel="noreferrer">
+                        <Download size={17} />
+                        <span>{name}</span>
+                        <ChevronRight size={16} />
+                      </a>
+                    ))}
+                  </div>
+
+                  <div className="assets-controls" style={{display: 'flex', gap: 12, marginTop: 12}}>
+                    <button
+                      className="download-card"
+                      onClick={() => loadAllAssets('A')}
+                      disabled={assetsLoading && assetsSide === 'A'}
+                      title="Load all Source A assets (aggregates paginated API calls)"
+                    >
+                      <ScanSearch size={17} />
+                      <span>View Source A assets</span>
+                    </button>
+
+                    <button
+                      className="download-card"
+                      onClick={() => loadAllAssets('B')}
+                      disabled={assetsLoading && assetsSide === 'B'}
+                      title="Load all Source B assets (aggregates paginated API calls)"
+                    >
+                      <ScanSearch size={17} />
+                      <span>View Source B assets</span>
+                    </button>
+
+                    <div style={{alignSelf: 'center', color: '#8a98a6'}}>
+                      {assetsLoading ? `Loading ${assetsSide} assets…` : assets.length ? `${assets.length} assets loaded` : ''}
+                    </div>
+                  </div>
+                </>
               )}
 
               {failed && <div className="alert error inline"><AlertTriangle size={17} /> {job.error || "Unknown engine error."}</div>}
 
               {(completed || failed) && <button className="reset-button" onClick={reset}><RefreshCw size={15} /> NEW ANALYSIS</button>}
+
+              {/* Assets modal / grid */}
+              {assetsVisible && (
+                <div className="assets-modal" style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',justifyContent:'center',alignItems:'center',zIndex:1200}}>
+                  <div style={{width:'90%',height:'90%',background:'#07121a',borderRadius:12,overflow:'auto',padding:16}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                      <h3 style={{margin:0}}>Assets — Source {assetsSide}</h3>
+                      <div style={{display:'flex',gap:8}}>
+                        <a className="download-card" href={fileUrl(`matches.csv`)} style={{alignSelf:'center'}}><Download size={17} /><span>Download CSV</span></a>
+                        <button className="reset-button" onClick={() => { setAssetsVisible(false); setAssets([]); setAssetsSide(null); }}><RefreshCw size={15} /> CLOSE</button>
+                      </div>
+                    </div>
+
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))',gap:12}}>
+                      {assets.map((item, i) => (
+                        <div key={item.asset_id || i} style={{background:'#071821',borderRadius:8,padding:8,display:'flex',flexDirection:'column',gap:8}}>
+                          {item.image_file ? (
+                            <img src={`${API_URL}${item.asset_url}`} alt={item.asset_id} style={{width:'100%',height:120,objectFit:'contain',background:'#fff'}} />
+                          ) : (
+                            <div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',color:'#8a98a6'}}>No image</div>
+                          )}
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                            <small style={{color:'#8a98a6'}}>{item.asset_id}</small>
+                            {item.image_file && (
+                              <a href={`${API_URL}${item.asset_url}`} target="_blank" rel="noreferrer" style={{color:'#58e8ff'}}>Open</a>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </motion.section>
           )}
         </AnimatePresence>
