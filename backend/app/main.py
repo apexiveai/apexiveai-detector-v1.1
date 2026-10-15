@@ -22,9 +22,9 @@ from urllib.request import Request as UrlRequest, urlopen
 from urllib.parse import urlsplit
 
 import pymupdf
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTask, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 
 from .engine import STANDALONE_IMAGE_EXTENSIONS, run
@@ -765,6 +765,49 @@ def assets(
     for item in page_items:
         item["asset_url"] = f"/api/jobs/{jid}/assets/{side}/{item['image_file']}" if item.get("image_file") else None
     return {"items": page_items, "total": total, "offset": offset, "limit": limit}
+
+
+@app.get("/api/jobs/{jid}/assets/{side}/zip")
+def asset_zip(jid: str, side: str, request: Request = None):
+    _owned_job(jid, _tenant(request))
+    if side not in {"A", "B"}:
+        raise HTTPException(400, "Invalid side")
+    report_path = _job_dir(jid) / "report" / f"assets_{side.lower()}.json"
+    if not report_path.exists():
+        raise HTTPException(404, "Asset inventory not found")
+
+    items = json.loads(report_path.read_text(encoding="utf8"))
+    asset_dir = (_job_dir(jid) / "assets").resolve()
+    archive_name = f"source_{side.lower()}_assets.zip"
+    zip_path = (DATA / f"{jid}_{side.lower()}_assets.zip").resolve()
+    if zip_path.parent != DATA.resolve():
+        raise HTTPException(400, "Invalid job identifier.")
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in items:
+            image_file = item.get("image_file")
+            if not image_file:
+                continue
+            path = (asset_dir / image_file).resolve()
+            if path.parent != asset_dir or not path.is_file():
+                continue
+            archive.write(path, arcname=image_file)
+
+    def cleanup() -> None:
+        try:
+            if zip_path.exists():
+                zip_path.unlink()
+        except OSError:
+            pass
+
+    _audit(_tenant(request), "asset_zip_exported", jid, side=side, filename=archive_name)
+    return FileResponse(
+        zip_path,
+        filename=archive_name,
+        media_type="application/zip",
+        headers={"Cache-Control": "private, no-store"},
+        background=BackgroundTask(cleanup),
+    )
 
 
 @app.get("/api/jobs/{jid}/assets/{side}/{filename}")

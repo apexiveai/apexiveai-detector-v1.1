@@ -45,6 +45,23 @@ PDF extraction and matching report progress in bounded page/asset loops; uploads
 
 ## Production deployment
 
+### Railway API + Vercel frontend
+
+Deploy the API and frontend as separate services. Deploy the backend first so its public URL is available for the Vercel build.
+
+1. In Railway, create a service from this repository and set its **Root Directory** to `/backend`. Railway will build `backend/Dockerfile` from that directory. Set the health check path to `/health` (allow up to 300 seconds for the first deployment).
+2. Add a Railway volume mounted at `/app/data`. Keep this service to **one replica**: the job queue is process-local and SQLite/local files are not shared safely across replicas.
+3. Set the Railway variables:
+   - `APP_ENV=production`
+   - `APEXIVE_API_URL=https://<your-central-apexive-api-origin>` (origin only; no `/api` suffix)
+   - `CORS_ORIGINS=https://<your-vercel-domain>` (exact browser origin, with no trailing slash)
+   Configure any required JWT issuer/audience values for the central authorization setup. The API must be reachable from Railway over HTTPS.
+4. Deploy the Railway service, then open `https://<your-railway-domain>/health` and confirm it returns a healthy response. Keep the generated Railway domain; it is the backend API origin.
+5. Import the same repository into Vercel and set **Root Directory** to `frontend`. Add the build environment variable `VITE_API_URL=https://<your-railway-domain>` (origin only, no trailing slash), then deploy. The checked-in `frontend/vercel.json` enables SPA route fallback for direct links and refreshes.
+6. If you use a custom Vercel domain, update Railway's `CORS_ORIGINS` to that exact origin and redeploy the backend. Add each allowed Vercel preview origin explicitly if previews need API access; do not use `*`.
+
+`VITE_API_URL` is embedded in the frontend at build time, so redeploy Vercel after changing it. Railway's `PORT` is supplied by the platform; the container binds to it and its Docker health check follows it. Keep the Railway volume attached when redeploying so SQLite records and uploaded reports persist.
+
 The Docker Compose setup builds a non-root FastAPI backend and static Nginx frontend, serves the API through the same origin, persists job data in a named volume, and health-checks both services.
 
 1. Copy `.env.example` to `.env` and configure either a unique high-entropy `JWT_SECRET` (at least 32 random bytes) or a trusted `JWT_PUBLIC_KEY` and matching `JWT_ALGORITHMS`. Never commit `.env`.

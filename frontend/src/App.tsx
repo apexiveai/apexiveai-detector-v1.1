@@ -42,9 +42,24 @@ type Job = {
   files?: string[];
 };
 
+type AssetItem = {
+  asset_id?: string;
+  image_file?: string;
+  asset_url?: string | null;
+  source_reference?: string;
+  application_no?: string;
+};
+
 const API_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8020").replace(/\/$/, "");
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const authHeaders = () => {
+  const headers = new Headers();
+  const token = localStorage.getItem("apexive_token") || sessionStorage.getItem("apexive_token");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return headers;
+};
 
 function formatBytes(value: number) {
   if (!value) return "0 B";
@@ -79,10 +94,22 @@ function App() {
   ], [job]);
 
   // Assets viewer state
-  const [assets, setAssets] = useState<Array<any>>([]);
+  const [assets, setAssets] = useState<AssetItem[]>([]);
   const [assetsSide, setAssetsSide] = useState<"A" | "B" | null>(null);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assetsVisible, setAssetsVisible] = useState(false);
+  const [visibleAssetCount, setVisibleAssetCount] = useState(120);
+
+  const onCloseAssets = () => {
+    setAssetsVisible(false);
+    setAssets([]);
+    setAssetsSide(null);
+    setVisibleAssetCount(120);
+  };
+
+  useEffect(() => {
+    setVisibleAssetCount(120);
+  }, [assetsVisible, assetsSide, assets.length]);
 
   async function loadAllAssets(side: "A" | "B") {
     if (!job?.job_id) return;
@@ -91,21 +118,22 @@ function App() {
     setAssetsLoading(true);
     setAssetsVisible(true);
     try {
-      const limit = 500; // backend caps to 500 per request; fetch pages until we have them all
+      const limit = 500;
       let offset = 0;
       let total = 0;
-      const collected: any[] = [];
+      const collected: AssetItem[] = [];
       do {
-        const r = await fetch(`${API_URL}/api/jobs/${job.job_id}/assets/${side}?offset=${offset}&limit=${limit}`);
+        const r = await fetch(`${API_URL}/api/jobs/${job.job_id}/assets/${side}?offset=${offset}&limit=${limit}`, {
+          headers: authHeaders(),
+          cache: "no-store",
+        });
         if (!r.ok) throw new Error(`Failed to fetch assets (${r.status})`);
         const data = await r.json();
         total = data.total || 0;
         collected.push(...(data.items || []));
         offset += (data.limit || limit);
-        // Small delay to avoid flooding in low-bandwidth environments
         await sleep(60);
       } while (collected.length < total);
-      // ensure each asset has asset_url prefixed (server provides relative path)
       setAssets(collected);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -113,6 +141,26 @@ function App() {
       setAssetsVisible(false);
     } finally {
       setAssetsLoading(false);
+    }
+  }
+
+  async function exportAssetZip(side: "A" | "B") {
+    if (!job?.job_id) return;
+    try {
+      const response = await fetch(`${API_URL}/api/jobs/${job.job_id}/assets/${side}/zip`, {
+        headers: authHeaders(),
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`ZIP export failed (${response.status})`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `source_${side.toLowerCase()}_assets.zip`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -411,32 +459,56 @@ function App() {
               {/* Assets modal / grid */}
               {assetsVisible && (
                 <div className="assets-modal" style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',justifyContent:'center',alignItems:'center',zIndex:1200}}>
-                  <div style={{width:'90%',height:'90%',background:'#07121a',borderRadius:12,overflow:'auto',padding:16}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                  <div style={{width:'90%',height:'90%',background:'#07121a',borderRadius:12,overflow:'hidden',padding:16,display:'flex',flexDirection:'column'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:12}}>
                       <h3 style={{margin:0}}>Assets — Source {assetsSide}</h3>
-                      <div style={{display:'flex',gap:8}}>
-                        <a className="download-card" href={fileUrl(`matches.csv`)} style={{alignSelf:'center'}}><Download size={17} /><span>Download CSV</span></a>
-                        <button className="reset-button" onClick={() => { setAssetsVisible(false); setAssets([]); setAssetsSide(null); }}><RefreshCw size={15} /> CLOSE</button>
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                        <button className="download-card" onClick={() => exportAssetZip(assetsSide || 'A')}>
+                          <Download size={17} />
+                          <span>ZIP export</span>
+                        </button>
+                        <a className="download-card" href={fileUrl(`matches.csv`)} target="_blank" rel="noreferrer" style={{alignSelf:'center'}}><Download size={17} /><span>Download CSV</span></a>
+                        <button className="reset-button" onClick={() => { setAssetsVisible(false); setAssets([]); setAssetsSide(null); setVisibleAssetCount(120); }}><RefreshCw size={15} /> CLOSE</button>
                       </div>
                     </div>
 
-                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))',gap:12}}>
-                      {assets.map((item, i) => (
-                        <div key={item.asset_id || i} style={{background:'#071821',borderRadius:8,padding:8,display:'flex',flexDirection:'column',gap:8}}>
-                          {item.image_file ? (
-                            <img src={`${API_URL}${item.asset_url}`} alt={item.asset_id} style={{width:'100%',height:120,objectFit:'contain',background:'#fff'}} />
-                          ) : (
-                            <div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',color:'#8a98a6'}}>No image</div>
-                          )}
-                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                            <small style={{color:'#8a98a6'}}>{item.asset_id}</small>
-                            {item.image_file && (
-                              <a href={`${API_URL}${item.asset_url}`} target="_blank" rel="noreferrer" style={{color:'#58e8ff'}}>Open</a>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                    <div
+                      onScroll={(event) => {
+                        const el = event.currentTarget;
+                        const reachedBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 220;
+                        if (reachedBottom && visibleAssetCount < assets.length) {
+                          setVisibleAssetCount((count) => Math.min(count + 120, assets.length));
+                        }
+                      }}
+                      style={{overflowY:'auto',paddingRight:6,display:'grid'}}
+                    >
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))',gap:12}}>
+                        {assets.slice(0, visibleAssetCount).map((item, i) => {
+                          const assetUrl = item.asset_url ? `${API_URL}${item.asset_url}` : "";
+                          return (
+                            <div key={item.asset_id || i} style={{background:'#071821',borderRadius:8,padding:8,display:'flex',flexDirection:'column',gap:8,minHeight:180}}>
+                              {item.image_file && assetUrl ? (
+                                <img src={assetUrl} alt={item.asset_id} loading="lazy" style={{width:'100%',height:120,objectFit:'contain',background:'#fff'}} />
+                              ) : (
+                                <div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',color:'#8a98a6'}}>No image</div>
+                              )}
+                              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+                                <small style={{color:'#8a98a6',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.asset_id || `Asset ${i + 1}`}</small>
+                                {item.image_file && assetUrl && (
+                                  <a href={assetUrl} target="_blank" rel="noreferrer" style={{color:'#58e8ff',whiteSpace:'nowrap'}}>Open</a>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
+
+                    {visibleAssetCount < assets.length && (
+                      <div style={{display:'flex',justifyContent:'center',paddingTop:12}}>
+                        <button className="reset-button" onClick={() => setVisibleAssetCount((count) => Math.min(count + 120, assets.length))}>LOAD MORE</button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
