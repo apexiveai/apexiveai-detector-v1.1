@@ -22,10 +22,11 @@ from urllib.request import Request as UrlRequest, urlopen
 from urllib.parse import urlsplit
 
 import pymupdf
-from fastapi import BackgroundTask, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
+from starlette.background import BackgroundTask
 
 from .engine import STANDALONE_IMAGE_EXTENSIONS, run
 

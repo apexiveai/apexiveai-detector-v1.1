@@ -24,15 +24,13 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY backend/app ./app
+COPY backend/entrypoint.py ./entrypoint.py
 RUN mkdir -p /app/data \
     && python -m compileall -q /app/app \
     && chown -R 10001:10001 /app
 
-USER 10001:10001
 EXPOSE 8020
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8020') + '/health', timeout=3)"
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8020} --workers 1"]
-
+CMD ["python", "/app/entrypoint.py"]

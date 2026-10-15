@@ -49,7 +49,7 @@ PDF extraction and matching report progress in bounded page/asset loops; uploads
 
 Deploy the API and frontend as separate services. Deploy the backend first so its public URL is available for the Vercel build.
 
-1. In Railway, create a service from this repository and set its **Root Directory** to `/backend`. Railway will build `backend/Dockerfile` from that directory. Set the health check path to `/health` (allow up to 300 seconds for the first deployment).
+1. In Railway, create a service from this repository and leave **Root Directory** at the repository root. Railway will build the root `Dockerfile`; leave the Railway Start Command blank to use its `PORT`-aware container command, and set the health check path to `/health`.
 2. Add a Railway volume mounted at `/app/data`. Keep this service to **one replica**: the job queue is process-local and SQLite/local files are not shared safely across replicas.
 3. Set the Railway variables:
    - `APP_ENV=production`
