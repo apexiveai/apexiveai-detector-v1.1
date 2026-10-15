@@ -11,7 +11,8 @@ type ResultPage={items:Match[];total:number};
 type MarkAsset={asset_id:string;source_file:string;source_type:string;application_no?:string;company?:string;mark?:string;mark_text?:string;mark_content_type?:string;source_reference?:string;page?:number;sheet?:string;row?:number;column?:number;field_label?:string;image_file?:string;asset_url?:string|null};
 type AssetPage={items:MarkAsset[];total:number};
 
-const API=(import.meta.env.VITE_API_URL||'').trim().replace(/\/+$/,'');
+const DEFAULT_API=import.meta.env.DEV?'':'https://trademark-conflict-backend-production.up.railway.app';
+const API=(import.meta.env.VITE_API_URL||DEFAULT_API).trim().replace(/\/+$/,'');
 const pct=(x:number)=>`${Math.round(x*100)}%`;
 function apiFetch(input:RequestInfo|URL,init:RequestInit={}):Promise<Response>{
  const headers=new Headers(init.headers);
