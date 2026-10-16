@@ -185,6 +185,20 @@ function App(){
     {!resultsLoading&&!resultsError&&resultCount===0&&<div className="tiny">No matching logos found. Try different logo files or search terms.</div>}
     <div className="matchList">{results.map((m,i)=><MatchCard key={m.match_id} m={m} i={i}/>)}</div><div className="pager"><button disabled={page<=1||resultsLoading} onClick={()=>setPage(p=>p-1)}>← Previous</button><span>Page {page} / {pageCount} · {resultCount.toLocaleString()} results</span><button disabled={page>=pageCount||resultsLoading} onClick={()=>setPage(p=>p+1)}>Next →</button></div>
    </>}
+    <section className="productScope" aria-labelledby="scope-title">
+     <div className="scopeHeading"><div><div className="eyebrow">SYSTEM SCOPE / 01—07</div><h2 id="scope-title">Visual marks. Independent application evidence.</h2></div><p>Cross-format comparison with source locations preserved for human review.</p></div>
+     <div className="scopeModules">
+      <article><span>01 / LOGO DETECTION</span><h3>Shape, color, symbol, layout</h3><p>Extract marks from documents and compare their visual structure independently.</p></article>
+      <article><span>02 / APPLICATION NUMBER</span><h3>Exact, normalized, mismatch</h3><p>Read application identifiers as a separate evidence track; they never gate logo matching.</p></article>
+      <article><span>03 / UNIVERSAL COMPARISON</span><h3>PDF ↔ workbook ↔ image</h3><p>Compare PDF, XLSX/XLSM, SVG, PNG, JPEG, BMP, WEBP, TIFF, and GIF sources.</p></article>
+      <article><span>04 / RESULTS DASHBOARD</span><h3>Search, filter, inspect, export</h3><p>Review matched marks side by side with page, sheet, row, score, and evidence details.</p></article>
+     </div>
+     <div className="scopeDetails">
+      <section className="formatPanel" aria-labelledby="formats-title"><div className="scopeLabel"><div className="eyebrow">02 / INPUT FORMATS</div><h3 id="formats-title">One engine across file types</h3></div><div className="formatList"><div><b>PDF</b><span>Page mark extraction + coordinates</span></div><div><b>XLSX / XLSM</b><span>Worksheet marks + source cells</span></div><div><b>SVG / IMAGE</b><span>Vector and raster logo extraction</span></div></div></section>
+      <section className="evidencePanel" aria-labelledby="evidence-title"><div className="scopeLabel"><div className="eyebrow">03 / VISUAL EVIDENCE</div><h3 id="evidence-title">Three independent signals</h3></div><div className="signalList"><div><i className="signalShape"/><span>Shape</span><small>Contour + mask</small></div><div><i className="signalColor"/><span>Color</span><small>Palette similarity</small></div><div><i className="signalLayout"/><span>Layout</span><small>Spatial structure</small></div></div></section>
+     </div>
+     <div className="scopeFooter"><div><span>PAIR SCREENING CAPACITY</span><strong>6,000 <i>×</i> 6,000</strong><small>Up to 36 million logo-pair candidates</small></div><div className="scopeFlow"><span>EXTRACT</span><b>→</b><span>INDEX</span><b>→</b><span>COMPARE</span><b>→</b><span>REVIEW</span></div></div>
+    </section>
   </main>
   <footer>Apexive AI · Technical visual evidence only · Application No. does not gate logo matching</footer>
  </div>

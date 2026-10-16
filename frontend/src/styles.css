@@ -24,9 +24,10 @@ button { color: inherit; }
   overflow: hidden;
   background-color: #050912;
   background-image:
-    linear-gradient(180deg, #040915ad 0%, #040915db 34%, #050912f2 78%),
-    url('/OIP.webp');
-  background-position: center top;
+    linear-gradient(180deg, #040915a8 0%, #040915ad 34%, #050912eb 78%),
+    linear-gradient(105deg, #06131bb3 0%, #07111b45 48%, #190d1b99 100%),
+    url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&w=2400&q=85');
+  background-position: center 36%;
   background-size: cover;
   background-attachment: fixed;
 }
@@ -128,10 +129,12 @@ main { width: min(1280px, 90vw); margin: 0 auto; padding: 66px 0 78px; }
   margin: 20px 0 18px;
   max-width: 690px;
   color: #f1f8fb;
-  font-size: clamp(46px, 6.1vw, 78px);
+  font-family: 'Space Mono', monospace;
+  font-size: 72px;
   font-weight: 500;
   line-height: .99;
-  letter-spacing: -.055em;
+  letter-spacing: 0;
+  font-variant-caps: all-small-caps;
 }
 .hero h1 em {
   color: #75dce1;
@@ -410,6 +413,39 @@ main { width: min(1280px, 90vw); margin: 0 auto; padding: 66px 0 78px; }
 .pager { display: flex; justify-content: center; align-items: center; gap: 17px; margin: 22px 0; color: #8295a0; font: 9px 'Space Mono', monospace; font-variant-caps: all-small-caps; }
 .pager button { padding: 9px 12px; border: 1px solid #294353; border-radius: 8px; color: #c3d2da; background: #0a1620; cursor: pointer; }
 .pager button:disabled { opacity: .38; cursor: not-allowed; }
+.productScope { margin-top: 66px; padding: 30px 0 0; border-top: 1px solid #63d9e43b; }
+.scopeHeading { display: flex; justify-content: space-between; align-items: end; gap: 28px; margin-bottom: 24px; }
+.scopeHeading h2 { max-width: 680px; margin: 12px 0 0; color: #eef8fa; font: 500 30px/1.2 'Space Mono', monospace; letter-spacing: 0; font-variant-caps: all-small-caps; }
+.scopeHeading > p { max-width: 300px; margin: 0; color: #a5b7c2; font-size: 12px; line-height: 1.7; }
+.scopeModules { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid #54717d4d; border-bottom: 1px solid #54717d4d; }
+.scopeModules article { min-width: 0; padding: 20px 18px 22px; border-right: 1px solid #54717d4d; }
+.scopeModules article:first-child { padding-left: 0; }
+.scopeModules article:last-child { padding-right: 0; border-right: 0; }
+.scopeModules article > span, .scopeFooter > div:first-child > span { color: #68dce6; font: 9px 'Space Mono', monospace; letter-spacing: .06em; }
+.scopeModules h3, .scopeLabel h3 { margin: 12px 0 7px; color: #e6f1f4; font: 500 17px/1.35 'Space Mono', monospace; font-variant-caps: all-small-caps; }
+.scopeModules p { margin: 0; color: #9aabb5; font-size: 11px; line-height: 1.7; }
+.scopeDetails { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; padding: 28px 0; border-bottom: 1px solid #54717d4d; }
+.formatPanel, .evidencePanel { min-width: 0; }
+.scopeLabel h3 { margin-bottom: 16px; }
+.formatList { display: grid; grid-template-columns: 1fr; }
+.formatList > div { display: grid; grid-template-columns: 112px 1fr; gap: 12px; padding: 10px 0; border-top: 1px solid #54717d36; }
+.formatList b { color: #e6f3f5; font: 10px 'Space Mono', monospace; }
+.formatList span, .signalList small { color: #9aabb5; font-size: 10px; }
+.signalList { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.signalList > div { display: grid; grid-template-columns: 12px 1fr; align-items: center; gap: 5px 8px; padding: 12px 0; border-top: 1px solid #54717d36; }
+.signalList i { width: 8px; height: 8px; grid-row: span 2; border-radius: 50%; box-shadow: 0 0 12px currentColor; }
+.signalShape { color: #55dce7; background: currentColor; }
+.signalColor { color: #ff6ea9; background: currentColor; }
+.signalLayout { color: #f2b867; background: currentColor; }
+.signalList span { color: #e6f3f5; font: 10px 'Space Mono', monospace; }
+.signalList small { grid-column: 2; font-size: 9px; }
+.scopeFooter { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 22px 0 0; }
+.scopeFooter > div:first-child { display: grid; gap: 5px; }
+.scopeFooter strong { color: #eaf7f9; font: 500 22px 'Space Mono', monospace; }
+.scopeFooter strong i { color: #ff6ea9; font-style: normal; }
+.scopeFooter small { color: #92a6b1; font-size: 10px; }
+.scopeFlow { display: flex; align-items: center; gap: 12px; color: #b1c3cb; font: 9px 'Space Mono', monospace; }
+.scopeFlow b { color: #ff6ea9; font-weight: 400; }
 footer {
   display: flex;
   justify-content: space-between;
@@ -429,6 +465,9 @@ footer {
   .resultsHead { align-items: flex-start; flex-direction: column; }
   .tools { justify-content: flex-start; }
   .assetGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .scopeModules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scopeModules article:nth-child(2) { border-right: 0; }
+  .scopeModules article:nth-child(3) { padding-left: 0; }
 }
 
 @media (max-width: 700px) {
@@ -437,7 +476,7 @@ footer {
   .headerPill svg { width: 17px; height: 17px; }
   main { width: 92vw; padding: 42px 0 55px; }
   .hero { flex-direction: column; align-items: stretch; margin-bottom: 35px; }
-  .hero h1 { font-size: clamp(41px, 11vw, 62px); }
+  .hero h1 { font-size: 43px; }
   .hero p { font-size: 12px; }
   .heroJustice { width: min(290px, 78vw); min-width: 0; align-self: center; margin: -6px auto 0; }
   .uploadGrid { grid-template-columns: 1fr; gap: 12px; }
@@ -460,6 +499,16 @@ footer {
   .evidenceCircles { grid-template-columns: repeat(3, 76px); gap: 10px; }
   .evidenceCircle { width: 76px; height: 76px; }
   .assetGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scopeHeading { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .scopeHeading h2 { font-size: 23px; }
+  .scopeModules { grid-template-columns: 1fr; }
+  .scopeModules article, .scopeModules article:first-child, .scopeModules article:nth-child(3), .scopeModules article:last-child { padding: 16px 0; border-right: 0; border-bottom: 1px solid #54717d36; }
+  .scopeModules article:last-child { border-bottom: 0; }
+  .scopeDetails { grid-template-columns: 1fr; gap: 24px; }
+  .signalList { gap: 8px; }
+  .signalList > div { grid-template-columns: 10px 1fr; gap: 5px; }
+  .scopeFooter { align-items: flex-start; flex-direction: column; }
+  .scopeFlow { flex-wrap: wrap; gap: 8px; }
   footer { flex-direction: column; align-items: center; text-align: center; }
 }
 
